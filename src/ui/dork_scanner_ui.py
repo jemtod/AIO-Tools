@@ -334,19 +334,18 @@ class DorkScannerUI(QWidget):
                 padding: 15px;
                 font-size: 13px;
                 border-radius: 5px;
+                border: none;
             }
             QPushButton:hover {
                 background-color: #7f8c8d;
             }
-            QPushButton:enabled {
-                background-color: #e67e22;
-            }
-            QPushButton:enabled:hover {
-                background-color: #d35400;
+            QPushButton:pressed {
+                background-color: #34495e;
             }
         """)
         self.stop_scan_btn.clicked.connect(self._stop_dork_scanning)
         self.stop_scan_btn.setEnabled(False)
+        self._update_stop_button_style(False)  # Initial style
         btn_layout.addWidget(self.stop_scan_btn)
         
         # Single dork scan
@@ -719,6 +718,44 @@ class DorkScannerUI(QWidget):
             self.proxy_status.setText("Proxy: direct connection")
             self.proxy_status.setStyleSheet("color: #7f8c8d;")
     
+    def _update_stop_button_style(self, is_scanning: bool):
+        """Update STOP button style based on scanning state"""
+        if is_scanning:
+            # Enabled state - Orange color
+            self.stop_scan_btn.setStyleSheet("""
+                QPushButton {
+                    background-color: #e67e22;
+                    color: white;
+                    font-weight: bold;
+                    padding: 15px;
+                    font-size: 13px;
+                    border-radius: 5px;
+                    border: 2px solid #d35400;
+                }
+                QPushButton:hover {
+                    background-color: #d35400;
+                }
+                QPushButton:pressed {
+                    background-color: #c0392b;
+                }
+            """)
+        else:
+            # Disabled state - Gray color
+            self.stop_scan_btn.setStyleSheet("""
+                QPushButton {
+                    background-color: #95a5a6;
+                    color: #7f8c8d;
+                    font-weight: bold;
+                    padding: 15px;
+                    font-size: 13px;
+                    border-radius: 5px;
+                    border: none;
+                }
+                QPushButton:hover {
+                    background-color: #7f8c8d;
+                }
+            """)
+    
     def _start_dork_scanning(self):
         """Start scanning all dorks"""
         dorks = self.scanner.get_dork_list()
@@ -760,6 +797,7 @@ class DorkScannerUI(QWidget):
         
         # Enable stop button
         self.stop_scan_btn.setEnabled(True)
+        self._update_stop_button_style(True)  # Update styling to enabled (orange)
         
         # Start scan in background thread
         self.scan_thread = ScanWorkerThread(self.scanner, dorks, max_results)
@@ -778,6 +816,7 @@ class DorkScannerUI(QWidget):
         """Handle scan completion"""
         # Disable stop button
         self.stop_scan_btn.setEnabled(False)
+        self._update_stop_button_style(False)  # Update styling to disabled (gray)
         
         # Stop log update timer
         if hasattr(self, '_update_logs_timer'):
@@ -859,6 +898,7 @@ class DorkScannerUI(QWidget):
         """Handle scan stopped by user"""
         # Disable stop button
         self.stop_scan_btn.setEnabled(False)
+        self._update_stop_button_style(False)  # Update styling to disabled (gray)
         
         # Stop log update timer
         if hasattr(self, '_update_logs_timer'):
@@ -915,6 +955,7 @@ class DorkScannerUI(QWidget):
         """Handle scan error"""
         # Disable stop button
         self.stop_scan_btn.setEnabled(False)
+        self._update_stop_button_style(False)  # Update styling to disabled (gray)
         
         # Stop log update timer
         if hasattr(self, '_update_logs_timer'):
