@@ -221,51 +221,36 @@ class URLScannerThread(QThread):
             self.error_occurred.emit(f"Scan error: {str(e)}")
     
     def _scan_single_url(self, url: str, url_num: int, total: int) -> bool:
-        """Scan single URL for SQL injection vulnerability"""
+        """Scan single URL for SQL injection vulnerability with aggressive testing"""
         try:
-            # Stage 1: Pattern-based detection (fast)
+            # Stage 1: Pattern-based quick check
             pattern_result = self.scanner.detect_sql_injection_patterns(url)
-            
-            # Only do expensive tests if pattern-based detection is positive
-            if not pattern_result.get('has_injectable_params', False):
-                return False  # Not injectable, skip expensive tests
+            risk_level = pattern_result.get('risk_level', 'Very Low')
             
             is_vulnerable = False
             
-            # Stage 2: Payload testing (with shorter timeout)
-            if pattern_result.get('pattern_matched', False):
+            # Stage 2: Always test payloads on URLs with parameters (no matter risk level)
+            if '?' in url:
                 try:
                     payload_result = self.scanner.test_sql_injection_payloads(url)
-                    for payload_test in payload_result.get('tested_payloads', []):
-                        if payload_test.get('vulnerable', False):
-                            is_vulnerable = True
-                            break
+                    if payload_result.get('vulnerable', False):
+                        is_vulnerable = True
                 except:
-                    pass  # Payload testing failed, continue
+                    pass
             
-            # Stage 3: SQL error checking (only if needed)
-            if not is_vulnerable:
+            # Stage 3: Response error checking for High risk URLs
+            if not is_vulnerable and risk_level == "High":
                 try:
                     error_result = self.scanner.check_sql_errors(url)
                     if error_result.get('has_sql_errors', False):
                         is_vulnerable = True
                 except:
-                    pass  # Error checking failed, continue
-            
-            # Risk-based classification
-            if not is_vulnerable:
-                risk_level = pattern_result.get('risk_level', 'Very Low')
-                if risk_level == 'High':
-                    is_vulnerable = True
-                elif risk_level == 'Medium':
-                    issue_count = len(pattern_result.get('issues', []))
-                    if issue_count >= 2:
-                        is_vulnerable = True
+                    pass
             
             return is_vulnerable
         
         except Exception:
-            return False  # Mark as clean on error
+            return False
     
     def stop(self):
         """Stop scanning"""
