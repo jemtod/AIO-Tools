@@ -1,0 +1,13 @@
+# Sample URLs for vulnerability scanning
+# Lines starting with # are comments and will be ignored
+
+http://example.com/product.php?id=1
+http://example.com/category.php?cat=2
+http://testsite.com/page.php?search=test
+http://vulnerable.com/item.php?product_id=100
+http://myapp.com/user.php?user=admin
+http://shop.com/product.php?id=1' OR '1'='1
+http://oldsite.com/search.php?q=keyword
+http://api.test.com/get.php?item=5
+http://blog.example.com/post.php?post_id=123
+http://store.com/checkout.php?order=456

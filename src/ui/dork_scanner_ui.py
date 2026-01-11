@@ -135,6 +135,74 @@ class SQLiScannerThread(QThread):
         self.running = False
 
 
+class URLScannerThread(QThread):
+    """Worker thread for scanning URLs for vulnerabilities"""
+    progress_update = pyqtSignal(str)
+    scan_complete = pyqtSignal(dict)
+    error_occurred = pyqtSignal(str)
+    
+    def __init__(self, scanner, urls):
+        super().__init__()
+        self.scanner = scanner
+        self.urls = urls
+        self.running = True
+        self.vulnerable_urls = []
+        self.clean_urls = []
+    
+    def run(self):
+        """Run URL vulnerability scanning in background thread"""
+        try:
+            total = len(self.urls)
+            
+            for idx, url in enumerate(self.urls, 1):
+                if not self.running:
+                    break
+                
+                try:
+                    # Scan URL for SQL injection patterns
+                    pattern_result = self.scanner.detect_sql_injection_patterns(url)
+                    is_vulnerable = pattern_result['risk_level'] in ['High', 'Medium']
+                    
+                    # Additional payload testing for high-risk URLs
+                    if pattern_result['risk_level'] == 'High':
+                        payload_result = self.scanner.test_sql_injection_payloads(url)
+                        # Check if any payload was successful
+                        for payload_test in payload_result.get('tested_payloads', []):
+                            if payload_test.get('potentially_vulnerable', False):
+                                is_vulnerable = True
+                                break
+                    
+                    if is_vulnerable:
+                        self.vulnerable_urls.append(url)
+                        status = "VULNERABLE"
+                    else:
+                        self.clean_urls.append(url)
+                        status = "CLEAN"
+                    
+                    # Emit progress
+                    progress_msg = f"[{idx}/{total}] {status}: {url[:70]}"
+                    self.progress_update.emit(progress_msg)
+                    
+                except Exception as e:
+                    self.progress_update.emit(f"[{idx}/{total}] ERROR: {url[:50]} - {str(e)[:40]}")
+                    self.clean_urls.append(url)  # Mark as clean if error
+            
+            # Emit complete results
+            results = {
+                'vulnerable': self.vulnerable_urls,
+                'clean': self.clean_urls,
+                'total': total
+            }
+            self.scan_complete.emit(results)
+        
+        except Exception as e:
+            self.error_occurred.emit(f"Scan error: {str(e)}")
+    
+    def stop(self):
+        """Stop scanning"""
+        self.running = False
+
+
 class DorkScannerUI(QWidget):
     """Dork Scanner UI Component"""
     
@@ -146,6 +214,8 @@ class DorkScannerUI(QWidget):
         self.scan_thread = None
         self.single_dork_thread = None
         self.sqli_scan_thread = None
+        self.url_scan_thread = None
+        self.loaded_urls = []  # Store loaded URLs from file
         self._setup_logger_callbacks()
         self.init_ui()
     
@@ -417,8 +487,43 @@ class DorkScannerUI(QWidget):
         widget = QWidget()
         layout = QVBoxLayout()
         
-        # Single URL test
-        layout.addWidget(QLabel("Test URL for SQL Injection:"))
+        # Load URLs from file
+        layout.addWidget(QLabel("Load URLs from File:"))
+        file_layout = QHBoxLayout()
+        
+        load_btn = QPushButton("Load URLs from TXT File")
+        load_btn.setStyleSheet("""
+            QPushButton {
+                background-color: #3498db;
+                color: white;
+                font-weight: bold;
+                padding: 10px;
+                border-radius: 5px;
+            }
+            QPushButton:hover {
+                background-color: #2980b9;
+            }
+        """)
+        load_btn.clicked.connect(self._load_urls_from_file)
+        file_layout.addWidget(load_btn)
+        
+        clear_file_btn = QPushButton("Clear URLs")
+        clear_file_btn.clicked.connect(self._clear_scanner_urls)
+        file_layout.addWidget(clear_file_btn)
+        
+        file_layout.addStretch()
+        layout.addLayout(file_layout)
+        
+        # URL list display
+        layout.addWidget(QLabel("URLs to Scan:"))
+        self.url_list_display = QTextEdit()
+        self.url_list_display.setReadOnly(True)
+        self.url_list_display.setPlaceholderText("URLs will be loaded here after selecting a file")
+        self.url_list_display.setMaximumHeight(100)
+        layout.addWidget(self.url_list_display)
+        
+        # Single URL test (deprecated, kept for backward compatibility)
+        layout.addWidget(QLabel("Or Test Single URL:"))
         
         url_layout = QHBoxLayout()
         url_layout.addWidget(QLabel("URL:"))
@@ -441,6 +546,23 @@ class DorkScannerUI(QWidget):
         check_errors_btn = QPushButton("Check SQL Errors")
         check_errors_btn.clicked.connect(self._check_sql_errors)
         btn_layout.addWidget(check_errors_btn)
+        
+        # Scan all URLs button
+        scan_all_btn = QPushButton("Scan All Loaded URLs")
+        scan_all_btn.setStyleSheet("""
+            QPushButton {
+                background-color: #e74c3c;
+                color: white;
+                font-weight: bold;
+                padding: 10px;
+                border-radius: 5px;
+            }
+            QPushButton:hover {
+                background-color: #c0392b;
+            }
+        """)
+        scan_all_btn.clicked.connect(self._scan_all_urls_vulnerabilities)
+        btn_layout.addWidget(scan_all_btn)
         
         layout.addLayout(btn_layout)
         
@@ -1079,7 +1201,152 @@ class DorkScannerUI(QWidget):
         except Exception as e:
             QMessageBox.critical(self, "Error", str(e))
     
+    
     # ==================== URL Scanner Methods ====================
+    
+    def _load_urls_from_file(self):
+        """Load URLs from TXT file"""
+        file_path, _ = QFileDialog.getOpenFileName(
+            self,
+            "Load URLs from File",
+            "",
+            "Text Files (*.txt);;All Files (*.*)"
+        )
+        
+        if not file_path:
+            return
+        
+        try:
+            with open(file_path, 'r', encoding='utf-8') as f:
+                content = f.read()
+            
+            # Parse URLs (one per line, skip empty lines and comments)
+            urls = []
+            for line in content.split('\n'):
+                line = line.strip()
+                if line and not line.startswith('#'):
+                    urls.append(line)
+            
+            if not urls:
+                QMessageBox.warning(self, "Error", "No URLs found in file")
+                return
+            
+            # Store URLs
+            self.loaded_urls = urls
+            
+            # Display URLs
+            display_text = f"Loaded {len(urls)} URLs from file\n"
+            display_text += "=" * 50 + "\n\n"
+            for i, url in enumerate(urls[:20], 1):  # Show first 20
+                display_text += f"{i}. {url}\n"
+            
+            if len(urls) > 20:
+                display_text += f"\n... and {len(urls) - 20} more URLs"
+            
+            self.url_list_display.setText(display_text)
+            
+            QMessageBox.information(
+                self, "Success",
+                f"Loaded {len(urls)} URLs\n\n"
+                f"Click 'Scan All Loaded URLs' to start vulnerability scanning"
+            )
+        except Exception as e:
+            QMessageBox.critical(self, "Error", f"Failed to load file: {str(e)}")
+    
+    def _clear_scanner_urls(self):
+        """Clear loaded URLs"""
+        self.loaded_urls = []
+        self.url_list_display.clear()
+        self.scanner_results.clear()
+        QMessageBox.information(self, "Cleared", "All URLs cleared")
+    
+    def _scan_all_urls_vulnerabilities(self):
+        """Scan all loaded URLs for vulnerabilities"""
+        if not hasattr(self, 'loaded_urls') or not self.loaded_urls:
+            QMessageBox.warning(self, "Error", "Please load URLs from file first")
+            return
+        
+        reply = QMessageBox.question(
+            self, "Confirm Scan",
+            f"Scan {len(self.loaded_urls)} URLs for vulnerabilities?\n\n"
+            "This may take a few minutes depending on the number of URLs.",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
+        )
+        
+        if reply == QMessageBox.StandardButton.No:
+            return
+        
+        # Apply proxy settings
+        self._apply_proxy_settings()
+        
+        # Clear previous results
+        self.scanner_results.clear()
+        
+        # Start scanning in background thread
+        self.url_scan_thread = URLScannerThread(self.scanner, self.loaded_urls)
+        self.url_scan_thread.progress_update = pyqtSignal(str)
+        self.url_scan_thread.scan_complete = pyqtSignal(dict)
+        self.url_scan_thread.error_occurred = pyqtSignal(str)
+        
+        # Connect signals
+        self.url_scan_thread.progress_update.connect(self._on_url_scan_progress)
+        self.url_scan_thread.scan_complete.connect(self._on_url_scan_complete)
+        self.url_scan_thread.error_occurred.connect(self._on_url_scan_error)
+        
+        self.url_scan_thread.start()
+        
+        self.scanner_results.setText("Scanning URLs...\n" + "="*50 + "\n\n")
+    
+    def _on_url_scan_progress(self, message: str):
+        """Handle URL scan progress updates"""
+        current_text = self.scanner_results.toPlainText()
+        self.scanner_results.setText(current_text + message + "\n")
+        self.scanner_results.verticalScrollBar().setValue(
+            self.scanner_results.verticalScrollBar().maximum()
+        )
+    
+    def _on_url_scan_complete(self, results: dict):
+        """Handle URL scan completion"""
+        vulnerable = results.get('vulnerable', [])
+        clean = results.get('clean', [])
+        total = len(vulnerable) + len(clean)
+        
+        text = f"URL Vulnerability Scan Complete\n"
+        text += f"{'='*50}\n\n"
+        text += f"Total Scanned: {total}\n"
+        text += f"Vulnerable: {len(vulnerable)}\n"
+        text += f"Clean: {len(clean)}\n\n"
+        
+        if vulnerable:
+            text += "VULNERABLE URLs:\n"
+            text += "-"*50 + "\n"
+            for url in vulnerable:
+                text += f"✗ {url}\n"
+            text += "\n"
+        
+        if clean:
+            text += "CLEAN URLs:\n"
+            text += "-"*50 + "\n"
+            for url in clean[:10]:  # Show first 10 clean
+                text += f"✓ {url}\n"
+            if len(clean) > 10:
+                text += f"... and {len(clean) - 10} more clean URLs\n"
+        
+        self.scanner_results.setText(text)
+        
+        # Show summary popup
+        QMessageBox.information(
+            self, "Scan Complete",
+            f"Scanned {total} URLs\n\n"
+            f"Vulnerable: {len(vulnerable)}\n"
+            f"Clean: {len(clean)}"
+        )
+    
+    def _on_url_scan_error(self, error_msg: str):
+        """Handle URL scan error"""
+        QMessageBox.critical(self, "Scan Error", error_msg)
+        self.scanner_results.setText(f"Error: {error_msg}")
+    
     def _detect_sql_patterns(self):
         """Detect SQL injection patterns in URL"""
         url = self.test_url.text()
