@@ -10,7 +10,7 @@ from PyQt6.QtWidgets import (
     QInputDialog, QProgressBar, QApplication, QMenu
 )
 from PyQt6.QtCore import Qt, QThread, pyqtSignal, QTimer
-from tools import DorkScanner
+from tools import DorkScanner, FastScanner
 from datetime import datetime
 import threading
 
@@ -110,6 +110,7 @@ class DorkScannerUI(QWidget):
     def __init__(self):
         super().__init__()
         self.scanner = DorkScanner()
+        self.fast_scanner = FastScanner(max_workers=10, timeout=5)  # Fast parallel scanner
         self.parent_tabs = None
         self.scan_thread = None
         self.single_dork_thread = None
@@ -148,6 +149,7 @@ class DorkScannerUI(QWidget):
         self.main_tabs = QTabWidget()
         self.main_tabs.addTab(self._create_dork_list_tab(), "Dork List")
         self.main_tabs.addTab(self._create_google_dorking_tab(), "Google Dorking")
+        self.main_tabs.addTab(self._create_fast_scanner_tab(), "⚡ Fast Scanner")
         self.main_tabs.addTab(self._create_url_scanner_tab(), "URL Scanner")
         self.sql_injection_tab = self._create_sql_injection_tab()
         self.main_tabs.addTab(self.sql_injection_tab, "SQL Injection")
@@ -1535,4 +1537,453 @@ class DorkScannerUI(QWidget):
         self.db_schema_text.clear()
         self.dump_log_text.clear()
         self.dump_status_label.setText("Ready")
+    
+    def _create_fast_scanner_tab(self):
+        """Create Fast Scanner tab with parallel processing"""
+        widget = QWidget()
+        layout = QVBoxLayout()
+        
+        # Info banner
+        info_label = QLabel("⚡ High-Performance Scanner - Multi-threaded with Connection Pooling")
+        info_label.setStyleSheet("background-color: #4CAF50; color: white; padding: 10px; font-weight: bold;")
+        layout.addWidget(info_label)
+        
+        # Configuration section
+        config_group = QVBoxLayout()
+        
+        # Workers configuration
+        workers_layout = QHBoxLayout()
+        workers_layout.addWidget(QLabel("Max Workers (Threads):"))
+        self.fast_workers_spin = QSpinBox()
+        self.fast_workers_spin.setRange(1, 50)
+        self.fast_workers_spin.setValue(10)
+        self.fast_workers_spin.setToolTip("Number of concurrent threads (more = faster, but uses more resources)")
+        workers_layout.addWidget(self.fast_workers_spin)
+        
+        workers_layout.addWidget(QLabel("Timeout (seconds):"))
+        self.fast_timeout_spin = QSpinBox()
+        self.fast_timeout_spin.setRange(1, 30)
+        self.fast_timeout_spin.setValue(5)
+        self.fast_timeout_spin.setToolTip("Request timeout in seconds")
+        workers_layout.addWidget(self.fast_timeout_spin)
+        
+        workers_layout.addWidget(QLabel("Batch Size:"))
+        self.fast_batch_spin = QSpinBox()
+        self.fast_batch_spin.setRange(10, 200)
+        self.fast_batch_spin.setValue(50)
+        self.fast_batch_spin.setToolTip("Process URLs in batches for memory efficiency")
+        workers_layout.addWidget(self.fast_batch_spin)
+        
+        apply_config_btn = QPushButton("Apply Configuration")
+        apply_config_btn.clicked.connect(self._apply_fast_scanner_config)
+        workers_layout.addWidget(apply_config_btn)
+        workers_layout.addStretch()
+        
+        config_group.addLayout(workers_layout)
+        layout.addLayout(config_group)
+        
+        # Operation tabs
+        operation_tabs = QTabWidget()
+        
+        # Tab 1: Fast Dork Scanning
+        fast_dork_widget = QWidget()
+        fast_dork_layout = QVBoxLayout()
+        
+        fast_dork_layout.addWidget(QLabel("Dork List (one per line):"))
+        self.fast_dork_input = QTextEdit()
+        self.fast_dork_input.setMaximumHeight(150)
+        self.fast_dork_input.setPlaceholderText("inurl:php?id=\ninurl:asp?id=\ninurl:jsp?id=")
+        fast_dork_layout.addWidget(self.fast_dork_input)
+        
+        fast_dork_buttons = QHBoxLayout()
+        
+        fast_dork_scan_btn = QPushButton("⚡ Parallel Dork Scan")
+        fast_dork_scan_btn.setStyleSheet("background-color: #2196F3; color: white; font-weight: bold; padding: 10px;")
+        fast_dork_scan_btn.clicked.connect(self._start_fast_dork_scan)
+        fast_dork_buttons.addWidget(fast_dork_scan_btn)
+        
+        load_dorks_btn = QPushButton("Load from Dork List Tab")
+        load_dorks_btn.clicked.connect(self._load_dorks_to_fast_scanner)
+        fast_dork_buttons.addWidget(load_dorks_btn)
+        
+        fast_dork_layout.addLayout(fast_dork_buttons)
+        fast_dork_widget.setLayout(fast_dork_layout)
+        operation_tabs.addTab(fast_dork_widget, "Fast Dork Scan")
+        
+        # Tab 2: Fast SQLi Scanning
+        fast_sqli_widget = QWidget()
+        fast_sqli_layout = QVBoxLayout()
+        
+        fast_sqli_layout.addWidget(QLabel("URL List (one per line):"))
+        self.fast_sqli_input = QTextEdit()
+        self.fast_sqli_input.setMaximumHeight(150)
+        self.fast_sqli_input.setPlaceholderText("http://example.com/page.php?id=1\nhttp://example.com/product.php?id=2")
+        fast_sqli_layout.addWidget(self.fast_sqli_input)
+        
+        fast_sqli_buttons = QHBoxLayout()
+        
+        fast_sqli_scan_btn = QPushButton("⚡ Parallel SQLi Scan")
+        fast_sqli_scan_btn.setStyleSheet("background-color: #FF5722; color: white; font-weight: bold; padding: 10px;")
+        fast_sqli_scan_btn.clicked.connect(self._start_fast_sqli_scan)
+        fast_sqli_buttons.addWidget(fast_sqli_scan_btn)
+        
+        batch_sqli_btn = QPushButton("Batch Process (Memory Efficient)")
+        batch_sqli_btn.clicked.connect(self._start_batch_sqli_scan)
+        fast_sqli_buttons.addWidget(batch_sqli_btn)
+        
+        load_collected_btn = QPushButton("Load Collected URLs")
+        load_collected_btn.clicked.connect(self._load_collected_to_fast_scanner)
+        fast_sqli_buttons.addWidget(load_collected_btn)
+        
+        fast_sqli_layout.addLayout(fast_sqli_buttons)
+        fast_sqli_widget.setLayout(fast_sqli_layout)
+        operation_tabs.addTab(fast_sqli_widget, "Fast SQLi Scan")
+        
+        # Tab 3: URL Checker
+        url_checker_widget = QWidget()
+        url_checker_layout = QVBoxLayout()
+        
+        url_checker_layout.addWidget(QLabel("URL List to Check:"))
+        self.fast_checker_input = QTextEdit()
+        self.fast_checker_input.setMaximumHeight(150)
+        self.fast_checker_input.setPlaceholderText("http://example.com\nhttp://example2.com")
+        url_checker_layout.addWidget(self.fast_checker_input)
+        
+        checker_buttons = QHBoxLayout()
+        
+        check_alive_btn = QPushButton("⚡ Check URLs Alive")
+        check_alive_btn.setStyleSheet("background-color: #009688; color: white; font-weight: bold; padding: 10px;")
+        check_alive_btn.clicked.connect(self._check_urls_alive)
+        checker_buttons.addWidget(check_alive_btn)
+        
+        gather_info_btn = QPushButton("⚡ Gather URL Info")
+        gather_info_btn.clicked.connect(self._gather_urls_info)
+        checker_buttons.addWidget(gather_info_btn)
+        
+        url_checker_layout.addLayout(checker_buttons)
+        url_checker_widget.setLayout(url_checker_layout)
+        operation_tabs.addTab(url_checker_widget, "URL Checker")
+        
+        layout.addWidget(operation_tabs)
+        
+        # Results display
+        results_label = QLabel("Results:")
+        results_label.setStyleSheet("font-weight: bold; margin-top: 10px;")
+        layout.addWidget(results_label)
+        
+        self.fast_results_text = QTextEdit()
+        self.fast_results_text.setReadOnly(True)
+        self.fast_results_text.setStyleSheet("background-color: #263238; color: #00FF00; font-family: 'Courier New';")
+        layout.addWidget(self.fast_results_text)
+        
+        # Statistics
+        self.fast_stats_label = QLabel("Status: Ready | Workers: 10 | Timeout: 5s")
+        self.fast_stats_label.setStyleSheet("background-color: #37474F; color: white; padding: 5px;")
+        layout.addWidget(self.fast_stats_label)
+        
+        # Action buttons
+        action_buttons = QHBoxLayout()
+        
+        export_fast_btn = QPushButton("Export Results")
+        export_fast_btn.clicked.connect(self._export_fast_results)
+        action_buttons.addWidget(export_fast_btn)
+        
+        clear_fast_btn = QPushButton("Clear Results")
+        clear_fast_btn.clicked.connect(self._clear_fast_results)
+        action_buttons.addWidget(clear_fast_btn)
+        
+        stats_btn = QPushButton("Show Statistics")
+        stats_btn.clicked.connect(self._show_fast_scanner_stats)
+        action_buttons.addWidget(stats_btn)
+        
+        action_buttons.addStretch()
+        layout.addLayout(action_buttons)
+        
+        widget.setLayout(layout)
+        return widget
+    
+    def _apply_fast_scanner_config(self):
+        """Apply Fast Scanner configuration"""
+        max_workers = self.fast_workers_spin.value()
+        timeout = self.fast_timeout_spin.value()
+        
+        # Recreate fast scanner with new config
+        self.fast_scanner = FastScanner(max_workers=max_workers, timeout=timeout)
+        
+        # Re-apply proxy if configured
+        if hasattr(self, 'http_proxy_input') and hasattr(self, 'https_proxy_input'):
+            http_proxy = self.http_proxy_input.text().strip()
+            https_proxy = self.https_proxy_input.text().strip()
+            if http_proxy or https_proxy:
+                self.fast_scanner.set_proxies(http_proxy, https_proxy)
+        
+        self.fast_stats_label.setText(f"Status: Ready | Workers: {max_workers} | Timeout: {timeout}s")
+        self._log_fast(f"Configuration applied: {max_workers} workers, {timeout}s timeout")
+    
+    def _start_fast_dork_scan(self):
+        """Start parallel dork scanning"""
+        dorks_text = self.fast_dork_input.toPlainText().strip()
+        if not dorks_text:
+            QMessageBox.warning(self, "Error", "Please enter dork queries")
+            return
+        
+        dorks = [d.strip() for d in dorks_text.split('\n') if d.strip()]
+        
+        self._log_fast(f"Starting parallel dork scan: {len(dorks)} dorks with {self.fast_workers_spin.value()} workers")
+        self.fast_stats_label.setText(f"Status: Scanning {len(dorks)} dorks...")
+        QApplication.processEvents()
+        
+        try:
+            results = self.fast_scanner.scan_dorks_parallel(dorks, max_results_per_dork=10)
+            
+            # Display results
+            total_urls = sum(len(urls) for urls in results.values())
+            self._log_fast(f"\n{'='*60}")
+            self._log_fast(f"DORK SCAN COMPLETE")
+            self._log_fast(f"{'='*60}")
+            self._log_fast(f"Total dorks scanned: {len(dorks)}")
+            self._log_fast(f"Total URLs found: {total_urls}")
+            self._log_fast(f"")
+            
+            for dork, urls in results.items():
+                if urls:
+                    self._log_fast(f"\n[{dork}] - {len(urls)} URLs:")
+                    for url in urls[:5]:  # Show first 5
+                        self._log_fast(f"  • {url}")
+                    if len(urls) > 5:
+                        self._log_fast(f"  ... and {len(urls)-5} more")
+            
+            self.fast_stats_label.setText(f"Status: Complete | URLs: {total_urls} | Workers: {self.fast_workers_spin.value()}")
+            QMessageBox.information(self, "Success", f"Scan complete!\nFound {total_urls} URLs from {len(dorks)} dorks")
+            
+        except Exception as e:
+            self._log_fast(f"ERROR: {str(e)}")
+            QMessageBox.critical(self, "Error", f"Scan failed:\n{str(e)}")
+            self.fast_stats_label.setText("Status: Error")
+    
+    def _start_fast_sqli_scan(self):
+        """Start parallel SQLi scanning"""
+        urls_text = self.fast_sqli_input.toPlainText().strip()
+        if not urls_text:
+            QMessageBox.warning(self, "Error", "Please enter URLs to scan")
+            return
+        
+        urls = [u.strip() for u in urls_text.split('\n') if u.strip() and u.startswith('http')]
+        
+        if not urls:
+            QMessageBox.warning(self, "Error", "No valid URLs found")
+            return
+        
+        self._log_fast(f"Starting parallel SQLi scan: {len(urls)} URLs with {self.fast_workers_spin.value()} workers")
+        self.fast_stats_label.setText(f"Status: Scanning {len(urls)} URLs for SQLi...")
+        QApplication.processEvents()
+        
+        try:
+            results = self.fast_scanner.scan_urls_for_sqli_parallel(urls)
+            
+            # Count vulnerabilities
+            vulnerable = [url for url, data in results.items() if data.get('vulnerable')]
+            
+            self._log_fast(f"\n{'='*60}")
+            self._log_fast(f"SQLI SCAN COMPLETE")
+            self._log_fast(f"{'='*60}")
+            self._log_fast(f"Total URLs scanned: {len(urls)}")
+            self._log_fast(f"Vulnerable URLs: {len(vulnerable)}")
+            self._log_fast(f"Clean URLs: {len(urls) - len(vulnerable)}")
+            self._log_fast(f"")
+            
+            if vulnerable:
+                self._log_fast("\n🔴 VULNERABLE URLS:")
+                for url in vulnerable:
+                    data = results[url]
+                    self._log_fast(f"  • {url}")
+                    self._log_fast(f"    Method: {data.get('method', 'Unknown')}")
+                    self._log_fast(f"    Risk: {data.get('risk_level', 'Unknown')}")
+                    self._log_fast(f"    Details: {', '.join(data.get('details', []))}")
+            
+            self.fast_stats_label.setText(f"Status: Complete | Vulnerable: {len(vulnerable)}/{len(urls)}")
+            
+            msg = f"SQLi Scan Complete!\n\n"
+            msg += f"Total URLs: {len(urls)}\n"
+            msg += f"Vulnerable: {len(vulnerable)}\n"
+            msg += f"Clean: {len(urls) - len(vulnerable)}"
+            QMessageBox.information(self, "Success", msg)
+            
+        except Exception as e:
+            self._log_fast(f"ERROR: {str(e)}")
+            QMessageBox.critical(self, "Error", f"Scan failed:\n{str(e)}")
+            self.fast_stats_label.setText("Status: Error")
+    
+    def _start_batch_sqli_scan(self):
+        """Start batch SQLi scanning for memory efficiency"""
+        urls_text = self.fast_sqli_input.toPlainText().strip()
+        if not urls_text:
+            QMessageBox.warning(self, "Error", "Please enter URLs to scan")
+            return
+        
+        urls = [u.strip() for u in urls_text.split('\n') if u.strip() and u.startswith('http')]
+        batch_size = self.fast_batch_spin.value()
+        
+        if not urls:
+            QMessageBox.warning(self, "Error", "No valid URLs found")
+            return
+        
+        self._log_fast(f"Starting batch SQLi scan: {len(urls)} URLs in batches of {batch_size}")
+        self.fast_stats_label.setText(f"Status: Batch scanning...")
+        QApplication.processEvents()
+        
+        try:
+            results = self.fast_scanner.process_urls_in_batches(urls, batch_size, operation='sqli')
+            
+            vulnerable = [url for url, data in results.items() if data.get('vulnerable')]
+            
+            self._log_fast(f"\n{'='*60}")
+            self._log_fast(f"BATCH SQLI SCAN COMPLETE")
+            self._log_fast(f"{'='*60}")
+            self._log_fast(f"Vulnerable: {len(vulnerable)}/{len(urls)}")
+            
+            self.fast_stats_label.setText(f"Status: Complete | Vulnerable: {len(vulnerable)}/{len(urls)}")
+            QMessageBox.information(self, "Success", f"Batch scan complete!\n{len(vulnerable)} vulnerable URLs found")
+            
+        except Exception as e:
+            self._log_fast(f"ERROR: {str(e)}")
+            QMessageBox.critical(self, "Error", f"Batch scan failed:\n{str(e)}")
+    
+    def _check_urls_alive(self):
+        """Check if URLs are alive"""
+        urls_text = self.fast_checker_input.toPlainText().strip()
+        if not urls_text:
+            QMessageBox.warning(self, "Error", "Please enter URLs to check")
+            return
+        
+        urls = [u.strip() for u in urls_text.split('\n') if u.strip() and u.startswith('http')]
+        
+        self._log_fast(f"Checking {len(urls)} URLs alive status...")
+        self.fast_stats_label.setText(f"Status: Checking {len(urls)} URLs...")
+        QApplication.processEvents()
+        
+        try:
+            results = self.fast_scanner.check_urls_alive_parallel(urls)
+            
+            alive = sum(1 for v in results.values() if v)
+            dead = len(urls) - alive
+            
+            self._log_fast(f"\n{'='*60}")
+            self._log_fast(f"URL ALIVE CHECK COMPLETE")
+            self._log_fast(f"{'='*60}")
+            self._log_fast(f"Alive: {alive}/{len(urls)}")
+            self._log_fast(f"Dead: {dead}/{len(urls)}")
+            self._log_fast(f"")
+            
+            for url, status in results.items():
+                symbol = "✓" if status else "✗"
+                self._log_fast(f"  {symbol} {url}")
+            
+            self.fast_stats_label.setText(f"Status: Complete | Alive: {alive}/{len(urls)}")
+            QMessageBox.information(self, "Success", f"Check complete!\n{alive} URLs are alive")
+            
+        except Exception as e:
+            self._log_fast(f"ERROR: {str(e)}")
+            QMessageBox.critical(self, "Error", f"Check failed:\n{str(e)}")
+    
+    def _gather_urls_info(self):
+        """Gather info from URLs"""
+        urls_text = self.fast_checker_input.toPlainText().strip()
+        if not urls_text:
+            QMessageBox.warning(self, "Error", "Please enter URLs")
+            return
+        
+        urls = [u.strip() for u in urls_text.split('\n') if u.strip() and u.startswith('http')]
+        
+        self._log_fast(f"Gathering info from {len(urls)} URLs...")
+        self.fast_stats_label.setText(f"Status: Gathering info...")
+        QApplication.processEvents()
+        
+        try:
+            results = self.fast_scanner.gather_url_info_parallel(urls)
+            
+            self._log_fast(f"\n{'='*60}")
+            self._log_fast(f"URL INFO GATHERING COMPLETE")
+            self._log_fast(f"{'='*60}")
+            
+            for url, info in results.items():
+                self._log_fast(f"\n{url}")
+                self._log_fast(f"  Status: {info.get('status', 'N/A')}")
+                self._log_fast(f"  Server: {info.get('server', 'Unknown')}")
+                self._log_fast(f"  Content-Type: {info.get('content_type', 'Unknown')}")
+                self._log_fast(f"  Response Time: {info.get('response_time', 0):.3f}s")
+            
+            self.fast_stats_label.setText(f"Status: Complete | URLs: {len(urls)}")
+            QMessageBox.information(self, "Success", f"Info gathered from {len(urls)} URLs")
+            
+        except Exception as e:
+            self._log_fast(f"ERROR: {str(e)}")
+            QMessageBox.critical(self, "Error", f"Gathering failed:\n{str(e)}")
+    
+    def _load_dorks_to_fast_scanner(self):
+        """Load dorks from Dork List tab"""
+        dorks = self.scanner.get_dork_list()
+        if not dorks:
+            QMessageBox.warning(self, "Error", "No dorks in Dork List tab")
+            return
+        
+        self.fast_dork_input.setPlainText('\n'.join(dorks))
+        self._log_fast(f"Loaded {len(dorks)} dorks from Dork List tab")
+        QMessageBox.information(self, "Success", f"Loaded {len(dorks)} dorks")
+    
+    def _load_collected_to_fast_scanner(self):
+        """Load collected URLs to fast scanner"""
+        urls = self.scanner.get_collected_urls()
+        if not urls:
+            QMessageBox.warning(self, "Error", "No collected URLs")
+            return
+        
+        self.fast_sqli_input.setPlainText('\n'.join(urls))
+        self._log_fast(f"Loaded {len(urls)} collected URLs")
+        QMessageBox.information(self, "Success", f"Loaded {len(urls)} URLs")
+    
+    def _export_fast_results(self):
+        """Export fast scanner results"""
+        content = self.fast_results_text.toPlainText()
+        if not content:
+            QMessageBox.warning(self, "Error", "No results to export")
+            return
+        
+        file_path, _ = QFileDialog.getSaveFileName(
+            self, "Export Results", "fast_scan_results.txt",
+            "Text Files (*.txt);;All Files (*.*)"
+        )
+        
+        if file_path:
+            try:
+                with open(file_path, 'w', encoding='utf-8') as f:
+                    f.write(content)
+                QMessageBox.information(self, "Success", f"Results exported to:\n{file_path}")
+            except Exception as e:
+                QMessageBox.critical(self, "Error", f"Export failed:\n{str(e)}")
+    
+    def _clear_fast_results(self):
+        """Clear fast scanner results"""
+        self.fast_results_text.clear()
+        self.fast_scanner.clear_results()
+        self._log_fast("Results cleared")
+    
+    def _show_fast_scanner_stats(self):
+        """Show fast scanner statistics"""
+        stats = self.fast_scanner.get_statistics()
+        
+        msg = "Fast Scanner Statistics:\n\n"
+        msg += f"Total URLs Collected: {stats['total_urls_collected']}\n"
+        msg += f"Vulnerable URLs: {stats['vulnerable_urls']}\n"
+        msg += f"Max Workers: {stats['max_workers']}\n"
+        msg += f"Timeout: {stats['timeout']}s\n"
+        msg += f"Sessions in Pool: {stats['sessions_in_pool']}\n"
+        
+        QMessageBox.information(self, "Statistics", msg)
+    
+    def _log_fast(self, message: str):
+        """Log message to fast scanner results"""
+        timestamp = datetime.now().strftime("%H:%M:%S")
+        self.fast_results_text.append(f"[{timestamp}] {message}")
+        QApplication.processEvents()
 

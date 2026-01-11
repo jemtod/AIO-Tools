@@ -7,6 +7,7 @@ from .security_tester import SecurityTester
 from .db_explorer import DatabaseExplorer
 from .dork_scanner import DorkScanner
 from .sql_dumper import SQLDumper
+from .fast_scanner import FastScanner
 from .progress_logger import ProgressLogger, LogLevel
 
 __all__ = [
@@ -15,6 +16,7 @@ __all__ = [
     'DatabaseExplorer',
     'DorkScanner',
     'SQLDumper',
+    'FastScanner',
     'ProgressLogger',
     'LogLevel'
 ]
