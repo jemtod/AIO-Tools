@@ -216,6 +216,8 @@ class DorkScannerUI(QWidget):
         self.sqli_scan_thread = None
         self.url_scan_thread = None
         self.loaded_urls = []  # Store loaded URLs from file
+        self.current_vulnerable_urls = []  # Store current vulnerable results
+        self.current_clean_urls = []  # Store current clean results
         self._setup_logger_callbacks()
         self.init_ui()
     
@@ -566,10 +568,75 @@ class DorkScannerUI(QWidget):
         
         layout.addLayout(btn_layout)
         
-        # Results
-        layout.addWidget(QLabel("Analysis Results:"))
+        # Results - Split into 2 sections
+        results_splitter = QHBoxLayout()
+        
+        # Vulnerable URLs section
+        vulnerable_layout = QVBoxLayout()
+        vulnerable_header = QHBoxLayout()
+        vulnerable_header.addWidget(QLabel("🔴 VULNERABLE URLs:"))
+        
+        copy_vulnerable_btn = QPushButton("📋 Copy Vulnerable")
+        copy_vulnerable_btn.setStyleSheet("""
+            QPushButton {
+                background-color: #e74c3c;
+                color: white;
+                font-weight: bold;
+                padding: 5px 10px;
+                border-radius: 3px;
+            }
+            QPushButton:hover {
+                background-color: #c0392b;
+            }
+        """)
+        copy_vulnerable_btn.clicked.connect(self._copy_vulnerable_urls)
+        vulnerable_header.addWidget(copy_vulnerable_btn)
+        vulnerable_header.addStretch()
+        vulnerable_layout.addLayout(vulnerable_header)
+        
+        self.vulnerable_results = QTextEdit()
+        self.vulnerable_results.setReadOnly(True)
+        self.vulnerable_results.setPlaceholderText("Vulnerable URLs will appear here...")
+        vulnerable_layout.addWidget(self.vulnerable_results)
+        
+        # Clean URLs section
+        clean_layout = QVBoxLayout()
+        clean_header = QHBoxLayout()
+        clean_header.addWidget(QLabel("🟢 CLEAN URLs:"))
+        
+        copy_clean_btn = QPushButton("📋 Copy Clean")
+        copy_clean_btn.setStyleSheet("""
+            QPushButton {
+                background-color: #27ae60;
+                color: white;
+                font-weight: bold;
+                padding: 5px 10px;
+                border-radius: 3px;
+            }
+            QPushButton:hover {
+                background-color: #229954;
+            }
+        """)
+        copy_clean_btn.clicked.connect(self._copy_clean_urls)
+        clean_header.addWidget(copy_clean_btn)
+        clean_header.addStretch()
+        clean_layout.addLayout(clean_header)
+        
+        self.clean_results = QTextEdit()
+        self.clean_results.setReadOnly(True)
+        self.clean_results.setPlaceholderText("Clean URLs will appear here...")
+        clean_layout.addWidget(self.clean_results)
+        
+        # Add both sections to splitter
+        results_splitter.addLayout(vulnerable_layout)
+        results_splitter.addLayout(clean_layout)
+        
+        layout.addLayout(results_splitter)
+        
+        # Keep single-result text area hidden for compatibility
         self.scanner_results = QTextEdit()
         self.scanner_results.setReadOnly(True)
+        self.scanner_results.setVisible(False)
         layout.addWidget(self.scanner_results)
         
         layout.addStretch()
@@ -1260,6 +1327,8 @@ class DorkScannerUI(QWidget):
         """Clear loaded URLs"""
         self.loaded_urls = []
         self.url_list_display.clear()
+        self.vulnerable_results.clear()
+        self.clean_results.clear()
         self.scanner_results.clear()
         QMessageBox.information(self, "Cleared", "All URLs cleared")
     
@@ -1283,7 +1352,13 @@ class DorkScannerUI(QWidget):
         self._apply_proxy_settings()
         
         # Clear previous results
+        self.vulnerable_results.clear()
+        self.clean_results.clear()
         self.scanner_results.clear()
+        
+        # Show scanning status
+        self.vulnerable_results.setText("⏳ Scanning in progress...")
+        self.clean_results.setText("⏳ Scanning in progress...")
         
         # Start scanning in background thread
         self.url_scan_thread = URLScannerThread(self.scanner, self.loaded_urls)
@@ -1311,28 +1386,33 @@ class DorkScannerUI(QWidget):
         clean = results.get('clean', [])
         total = len(vulnerable) + len(clean)
         
-        text = f"URL Vulnerability Scan Complete\n"
-        text += f"{'='*50}\n\n"
-        text += f"Total Scanned: {total}\n"
-        text += f"Vulnerable: {len(vulnerable)}\n"
-        text += f"Clean: {len(clean)}\n\n"
+        # Display vulnerable URLs
+        vulnerable_text = f"Total VULNERABLE: {len(vulnerable)}\n"
+        vulnerable_text += "=" * 50 + "\n\n"
         
         if vulnerable:
-            text += "VULNERABLE URLs:\n"
-            text += "-"*50 + "\n"
-            for url in vulnerable:
-                text += f"✗ {url}\n"
-            text += "\n"
+            for i, url in enumerate(vulnerable, 1):
+                vulnerable_text += f"{i}. {url}\n"
+        else:
+            vulnerable_text += "No vulnerable URLs found! ✓\n"
+        
+        self.vulnerable_results.setText(vulnerable_text)
+        
+        # Display clean URLs
+        clean_text = f"Total CLEAN: {len(clean)}\n"
+        clean_text += "=" * 50 + "\n\n"
         
         if clean:
-            text += "CLEAN URLs:\n"
-            text += "-"*50 + "\n"
-            for url in clean[:10]:  # Show first 10 clean
-                text += f"✓ {url}\n"
-            if len(clean) > 10:
-                text += f"... and {len(clean) - 10} more clean URLs\n"
+            for i, url in enumerate(clean, 1):
+                clean_text += f"{i}. {url}\n"
+        else:
+            clean_text += "No clean URLs found.\n"
         
-        self.scanner_results.setText(text)
+        self.clean_results.setText(clean_text)
+        
+        # Store for copy functionality
+        self.current_vulnerable_urls = vulnerable
+        self.current_clean_urls = clean
         
         # Show summary popup
         QMessageBox.information(
@@ -1345,7 +1425,40 @@ class DorkScannerUI(QWidget):
     def _on_url_scan_error(self, error_msg: str):
         """Handle URL scan error"""
         QMessageBox.critical(self, "Scan Error", error_msg)
-        self.scanner_results.setText(f"Error: {error_msg}")
+        self.vulnerable_results.setText(f"Error: {error_msg}")
+        self.clean_results.setText(f"Error: {error_msg}")
+    
+    def _copy_vulnerable_urls(self):
+        """Copy vulnerable URLs to clipboard"""
+        if not hasattr(self, 'current_vulnerable_urls') or not self.current_vulnerable_urls:
+            QMessageBox.warning(self, "No Data", "No vulnerable URLs to copy")
+            return
+        
+        # Copy to clipboard
+        clipboard = QApplication.clipboard()
+        urls_text = "\n".join(self.current_vulnerable_urls)
+        clipboard.setText(urls_text)
+        
+        QMessageBox.information(
+            self, "Copied",
+            f"Copied {len(self.current_vulnerable_urls)} vulnerable URLs to clipboard"
+        )
+    
+    def _copy_clean_urls(self):
+        """Copy clean URLs to clipboard"""
+        if not hasattr(self, 'current_clean_urls') or not self.current_clean_urls:
+            QMessageBox.warning(self, "No Data", "No clean URLs to copy")
+            return
+        
+        # Copy to clipboard
+        clipboard = QApplication.clipboard()
+        urls_text = "\n".join(self.current_clean_urls)
+        clipboard.setText(urls_text)
+        
+        QMessageBox.information(
+            self, "Copied",
+            f"Copied {len(self.current_clean_urls)} clean URLs to clipboard"
+        )
     
     def _detect_sql_patterns(self):
         """Detect SQL injection patterns in URL"""
