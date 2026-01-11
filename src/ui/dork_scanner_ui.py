@@ -1206,11 +1206,14 @@ class DorkScannerUI(QWidget):
     
     def _load_urls_from_file(self):
         """Load URLs from TXT file"""
+        # Use Qt file dialog with explicit options (read-only, native dialog)
+        options = QFileDialog.Option.ReadOnly
         file_path, _ = QFileDialog.getOpenFileName(
-            self,
-            "Load URLs from File",
-            "",
-            "Text Files (*.txt);;All Files (*.*)"
+            parent=self,
+            caption="Load URLs from File",
+            directory="",
+            filter="Text Files (*.txt);;All Files (*.*)",
+            options=options
         )
         
         if not file_path:
@@ -1284,11 +1287,8 @@ class DorkScannerUI(QWidget):
         
         # Start scanning in background thread
         self.url_scan_thread = URLScannerThread(self.scanner, self.loaded_urls)
-        self.url_scan_thread.progress_update = pyqtSignal(str)
-        self.url_scan_thread.scan_complete = pyqtSignal(dict)
-        self.url_scan_thread.error_occurred = pyqtSignal(str)
         
-        # Connect signals
+        # Connect signals (signals are declared on the thread class)
         self.url_scan_thread.progress_update.connect(self._on_url_scan_progress)
         self.url_scan_thread.scan_complete.connect(self._on_url_scan_complete)
         self.url_scan_thread.error_occurred.connect(self._on_url_scan_error)
