@@ -138,6 +138,8 @@ class SQLiScannerThread(QThread):
 class URLScannerThread(QThread):
     """Worker thread for scanning URLs for vulnerabilities"""
     progress_update = pyqtSignal(str)
+    vulnerable_found = pyqtSignal(str)  # Emit individual vulnerable URL
+    clean_found = pyqtSignal(str)  # Emit individual clean URL
     scan_complete = pyqtSignal(dict)
     error_occurred = pyqtSignal(str)
     
@@ -148,44 +150,63 @@ class URLScannerThread(QThread):
         self.running = True
         self.vulnerable_urls = []
         self.clean_urls = []
+        self.batch_size = 50  # Process in batches to prevent memory issues
     
     def run(self):
         """Run URL vulnerability scanning in background thread"""
         try:
             total = len(self.urls)
             
-            for idx, url in enumerate(self.urls, 1):
+            # Process in batches to prevent memory and UI blocking issues
+            for batch_start in range(0, total, self.batch_size):
                 if not self.running:
                     break
                 
-                try:
-                    # Scan URL for SQL injection patterns
-                    pattern_result = self.scanner.detect_sql_injection_patterns(url)
-                    is_vulnerable = pattern_result['risk_level'] in ['High', 'Medium']
+                batch_end = min(batch_start + self.batch_size, total)
+                
+                for idx in range(batch_start, batch_end):
+                    if not self.running:
+                        break
                     
-                    # Additional payload testing for high-risk URLs
-                    if pattern_result['risk_level'] == 'High':
-                        payload_result = self.scanner.test_sql_injection_payloads(url)
-                        # Check if any payload was successful
-                        for payload_test in payload_result.get('tested_payloads', []):
-                            if payload_test.get('potentially_vulnerable', False):
-                                is_vulnerable = True
-                                break
+                    url = self.urls[idx]
+                    url_num = idx + 1
                     
-                    if is_vulnerable:
-                        self.vulnerable_urls.append(url)
-                        status = "VULNERABLE"
-                    else:
-                        self.clean_urls.append(url)
-                        status = "CLEAN"
-                    
-                    # Emit progress
-                    progress_msg = f"[{idx}/{total}] {status}: {url[:70]}"
-                    self.progress_update.emit(progress_msg)
-                    
-                except Exception as e:
-                    self.progress_update.emit(f"[{idx}/{total}] ERROR: {url[:50]} - {str(e)[:40]}")
-                    self.clean_urls.append(url)  # Mark as clean if error
+                    try:
+                        # Scan URL for SQL injection patterns
+                        pattern_result = self.scanner.detect_sql_injection_patterns(url)
+                        is_vulnerable = pattern_result['risk_level'] in ['High', 'Medium']
+                        
+                        # Additional payload testing for high-risk URLs
+                        if pattern_result['risk_level'] == 'High':
+                            payload_result = self.scanner.test_sql_injection_payloads(url)
+                            # Check if any payload was successful
+                            for payload_test in payload_result.get('tested_payloads', []):
+                                if payload_test.get('potentially_vulnerable', False):
+                                    is_vulnerable = True
+                                    break
+                        
+                        if is_vulnerable:
+                            self.vulnerable_urls.append(url)
+                            self.vulnerable_found.emit(url)  # Emit immediately
+                            status = "VULNERABLE"
+                        else:
+                            self.clean_urls.append(url)
+                            self.clean_found.emit(url)  # Emit immediately
+                            status = "CLEAN"
+                        
+                        # Emit progress with percentage
+                        percentage = int((url_num / total) * 100)
+                        progress_msg = f"[{percentage}%] ({url_num}/{total}) {status}: {url[:60]}"
+                        self.progress_update.emit(progress_msg)
+                        
+                    except Exception as e:
+                        percentage = int((url_num / total) * 100)
+                        self.progress_update.emit(f"[{percentage}%] ({url_num}/{total}) ERROR: {url[:40]}")
+                        self.clean_urls.append(url)  # Mark as clean if error
+                
+                # Small sleep between batches to allow UI updates
+                if batch_end < total and self.running:
+                    self.msleep(10)
             
             # Emit complete results
             results = {
@@ -203,6 +224,70 @@ class URLScannerThread(QThread):
         self.running = False
 
 
+class FileLoaderThread(QThread):
+    """Worker thread for loading URLs from file in background"""
+    progress_update = pyqtSignal(str)
+    urls_loaded = pyqtSignal(list)
+    error_occurred = pyqtSignal(str)
+    
+    def __init__(self, file_path):
+        super().__init__()
+        self.file_path = file_path
+        self.running = True
+    
+    def run(self):
+        """Load URLs from file in background thread"""
+        try:
+            # First pass: count total lines
+            total_lines = 0
+            try:
+                with open(self.file_path, 'r', encoding='utf-8') as f:
+                    for _ in f:
+                        total_lines += 1
+            except Exception as e:
+                self.error_occurred.emit(f"Failed to read file: {str(e)}")
+                return
+            
+            if total_lines == 0:
+                self.error_occurred.emit("File is empty")
+                return
+            
+            # Second pass: load URLs with progress tracking
+            urls = []
+            current_line = 0
+            
+            with open(self.file_path, 'r', encoding='utf-8') as f:
+                for line in f:
+                    if not self.running:
+                        return
+                    
+                    current_line += 1
+                    line = line.strip()
+                    
+                    # Skip empty lines and comments
+                    if line and not line.startswith('#'):
+                        urls.append(line)
+                    
+                    # Progress update every 100 lines
+                    if current_line % 100 == 0 or current_line == total_lines:
+                        percentage = int((current_line / total_lines) * 100)
+                        progress_msg = f"Loading... {current_line}/{total_lines} lines ({percentage}%) - Found {len(urls)} URLs"
+                        self.progress_update.emit(progress_msg)
+                        self.msleep(5)  # Allow UI to update
+            
+            if urls:
+                self.urls_loaded.emit(urls)
+            else:
+                self.error_occurred.emit("No valid URLs found in file")
+        
+        except Exception as e:
+            self.error_occurred.emit(f"Error loading file: {str(e)}")
+    
+    def stop(self):
+        """Stop loading"""
+        self.running = False
+
+
 class DorkScannerUI(QWidget):
     """Dork Scanner UI Component"""
     
@@ -215,6 +300,7 @@ class DorkScannerUI(QWidget):
         self.single_dork_thread = None
         self.sqli_scan_thread = None
         self.url_scan_thread = None
+        self.file_loader_thread = None  # Thread for loading URLs from file
         self.loaded_urls = []  # Store loaded URLs from file
         self.current_vulnerable_urls = []  # Store current vulnerable results
         self.current_clean_urls = []  # Store current clean results
@@ -1272,7 +1358,7 @@ class DorkScannerUI(QWidget):
     # ==================== URL Scanner Methods ====================
     
     def _load_urls_from_file(self):
-        """Load URLs from TXT file"""
+        """Load URLs from TXT file using background thread"""
         # Use Qt file dialog with explicit options (read-only, native dialog)
         options = QFileDialog.Option.ReadOnly
         file_path, _ = QFileDialog.getOpenFileName(
@@ -1286,45 +1372,63 @@ class DorkScannerUI(QWidget):
         if not file_path:
             return
         
-        try:
-            with open(file_path, 'r', encoding='utf-8') as f:
-                content = f.read()
-            
-            # Parse URLs (one per line, skip empty lines and comments)
-            urls = []
-            for line in content.split('\n'):
-                line = line.strip()
-                if line and not line.startswith('#'):
-                    urls.append(line)
-            
-            if not urls:
-                QMessageBox.warning(self, "Error", "No URLs found in file")
-                return
-            
-            # Store URLs
-            self.loaded_urls = urls
-            
-            # Display URLs
-            display_text = f"Loaded {len(urls)} URLs from file\n"
-            display_text += "=" * 50 + "\n\n"
-            for i, url in enumerate(urls[:20], 1):  # Show first 20
-                display_text += f"{i}. {url}\n"
-            
-            if len(urls) > 20:
-                display_text += f"\n... and {len(urls) - 20} more URLs"
-            
-            self.url_list_display.setText(display_text)
-            
-            QMessageBox.information(
-                self, "Success",
-                f"Loaded {len(urls)} URLs\n\n"
-                f"Click 'Scan All Loaded URLs' to start vulnerability scanning"
-            )
-        except Exception as e:
-            QMessageBox.critical(self, "Error", f"Failed to load file: {str(e)}")
+        # Stop any existing file loader thread
+        if self.file_loader_thread and self.file_loader_thread.isRunning():
+            self.file_loader_thread.stop()
+            self.file_loader_thread.wait()
+        
+        # Create and start file loader thread
+        self.file_loader_thread = FileLoaderThread(file_path)
+        
+        # Connect signals
+        self.file_loader_thread.progress_update.connect(self._on_file_load_progress)
+        self.file_loader_thread.urls_loaded.connect(self._on_urls_loaded)
+        self.file_loader_thread.error_occurred.connect(self._on_file_load_error)
+        
+        # Show loading message
+        self.url_list_display.setText("Loading file... Please wait...\n\nThis may take a moment for large files.")
+        
+        # Start loading
+        self.file_loader_thread.start()
+    
+    def _on_file_load_progress(self, message):
+        """Handle file load progress updates"""
+        self.url_list_display.setText(message)
+        QApplication.processEvents()  # Keep UI responsive
+    
+    def _on_urls_loaded(self, urls):
+        """Handle successful URL file load"""
+        self.loaded_urls = urls
+        
+        # Display URLs
+        display_text = f"✓ Loaded {len(urls)} URLs from file\n"
+        display_text += "=" * 50 + "\n\n"
+        for i, url in enumerate(urls[:20], 1):  # Show first 20
+            display_text += f"{i}. {url}\n"
+        
+        if len(urls) > 20:
+            display_text += f"\n... and {len(urls) - 20} more URLs"
+        
+        self.url_list_display.setText(display_text)
+        
+        QMessageBox.information(
+            self, "Success",
+            f"Loaded {len(urls)} URLs\n\n"
+            f"Click 'Scan All Loaded URLs' to start vulnerability scanning"
+        )
+    
+    def _on_file_load_error(self, error):
+        """Handle file load error"""
+        self.url_list_display.setText(f"Error: {error}")
+        QMessageBox.critical(self, "Error", f"Failed to load file:\n{error}")
     
     def _clear_scanner_urls(self):
         """Clear loaded URLs"""
+        # Stop file loader if running
+        if self.file_loader_thread and self.file_loader_thread.isRunning():
+            self.file_loader_thread.stop()
+            self.file_loader_thread.wait()
+        
         self.loaded_urls = []
         self.url_list_display.clear()
         self.vulnerable_results.clear()
@@ -1356,29 +1460,91 @@ class DorkScannerUI(QWidget):
         self.clean_results.clear()
         self.scanner_results.clear()
         
-        # Show scanning status
-        self.vulnerable_results.setText("⏳ Scanning in progress...")
-        self.clean_results.setText("⏳ Scanning in progress...")
+        # Reset stored URLs for copy functionality
+        self.current_vulnerable_urls = []
+        self.current_clean_urls = []
+        
+        # Initialize counters
+        self.vulnerable_count = 0
+        self.clean_count = 0
+        self.total_urls = len(self.loaded_urls)
+        
+        # Show scanning headers with progress
+        self.vulnerable_results.setText("🔴 VULNERABLE URLs: 0\n" + "="*50 + "\n⏳ Progress: 0%\n")
+        self.clean_results.setText("🟢 CLEAN URLs: 0\n" + "="*50 + "\n⏳ Progress: 0%\n")
         
         # Start scanning in background thread
         self.url_scan_thread = URLScannerThread(self.scanner, self.loaded_urls)
         
         # Connect signals (signals are declared on the thread class)
         self.url_scan_thread.progress_update.connect(self._on_url_scan_progress)
+        self.url_scan_thread.vulnerable_found.connect(self._on_vulnerable_found)
+        self.url_scan_thread.clean_found.connect(self._on_clean_found)
         self.url_scan_thread.scan_complete.connect(self._on_url_scan_complete)
         self.url_scan_thread.error_occurred.connect(self._on_url_scan_error)
         
         self.url_scan_thread.start()
         
-        self.scanner_results.setText("Scanning URLs...\n" + "="*50 + "\n\n")
+        # Show initial scanning message in status area
+        pass
+    
+    def _on_vulnerable_found(self, url: str):
+        """Handle when a vulnerable URL is found - add immediately"""
+        self.vulnerable_count += 1
+        scanned = self.vulnerable_count + self.clean_count
+        percentage = int((scanned / self.total_urls) * 100) if self.total_urls > 0 else 0
+        
+        # Store URL for copy functionality
+        if not hasattr(self, 'current_vulnerable_urls'):
+            self.current_vulnerable_urls = []
+        self.current_vulnerable_urls.append(url)
+        
+        # Update header with count and progress
+        header = f"🔴 VULNERABLE URLs: {self.vulnerable_count}\n"
+        header += "="*50 + f"\n⏳ Progress: {percentage}% ({scanned}/{self.total_urls})\n\n"
+        
+        # Get current URLs (skip header)
+        current_text = self.vulnerable_results.toPlainText()
+        lines = current_text.split('\n')
+        url_lines = [line for line in lines[4:] if line.strip()]  # Skip first 4 lines (header)
+        
+        # Rebuild text
+        new_text = header + '\n'.join(url_lines) + f"\n{self.vulnerable_count}. {url}"
+        self.vulnerable_results.setText(new_text)
+        self.vulnerable_results.verticalScrollBar().setValue(
+            self.vulnerable_results.verticalScrollBar().maximum()
+        )
+    
+    def _on_clean_found(self, url: str):
+        """Handle when a clean URL is found - add immediately"""
+        self.clean_count += 1
+        scanned = self.vulnerable_count + self.clean_count
+        percentage = int((scanned / self.total_urls) * 100) if self.total_urls > 0 else 0
+        
+        # Store URL for copy functionality
+        if not hasattr(self, 'current_clean_urls'):
+            self.current_clean_urls = []
+        self.current_clean_urls.append(url)
+        
+        # Update header with count and progress
+        header = f"🟢 CLEAN URLs: {self.clean_count}\n"
+        header += "="*50 + f"\n⏳ Progress: {percentage}% ({scanned}/{self.total_urls})\n\n"
+        
+        # Get current URLs (skip header)
+        current_text = self.clean_results.toPlainText()
+        lines = current_text.split('\n')
+        url_lines = [line for line in lines[4:] if line.strip()]  # Skip first 4 lines (header)
+        
+        # Rebuild text
+        new_text = header + '\n'.join(url_lines) + f"\n{self.clean_count}. {url}"
+        self.clean_results.setText(new_text)
+        self.clean_results.verticalScrollBar().setValue(
+            self.clean_results.verticalScrollBar().maximum()
+        )
     
     def _on_url_scan_progress(self, message: str):
-        """Handle URL scan progress updates"""
-        current_text = self.scanner_results.toPlainText()
-        self.scanner_results.setText(current_text + message + "\n")
-        self.scanner_results.verticalScrollBar().setValue(
-            self.scanner_results.verticalScrollBar().maximum()
-        )
+        """Handle URL scan progress updates - not used with real-time separation"""
+        pass
     
     def _on_url_scan_complete(self, results: dict):
         """Handle URL scan completion"""
@@ -1386,8 +1552,8 @@ class DorkScannerUI(QWidget):
         clean = results.get('clean', [])
         total = len(vulnerable) + len(clean)
         
-        # Display vulnerable URLs
-        vulnerable_text = f"Total VULNERABLE: {len(vulnerable)}\n"
+        # Update headers with final counts
+        vulnerable_text = f"🔴 VULNERABLE URLs: {len(vulnerable)}\n"
         vulnerable_text += "=" * 50 + "\n\n"
         
         if vulnerable:
@@ -1398,8 +1564,8 @@ class DorkScannerUI(QWidget):
         
         self.vulnerable_results.setText(vulnerable_text)
         
-        # Display clean URLs
-        clean_text = f"Total CLEAN: {len(clean)}\n"
+        # Update clean results with final counts
+        clean_text = f"🟢 CLEAN URLs: {len(clean)}\n"
         clean_text += "=" * 50 + "\n\n"
         
         if clean:
