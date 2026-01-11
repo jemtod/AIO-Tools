@@ -18,6 +18,37 @@ class SecurityTester:
     
     def __init__(self):
         self.scan_results = []
+        self.proxies: Optional[Dict[str, str]] = None
+        
+    def set_proxies(self, http_proxy: str = "", https_proxy: str = "") -> Optional[Dict[str, str]]:
+        """Configure HTTP/HTTPS proxies for outbound HTTP requests
+        Format: host:port:username:password or host:port (no auth)
+        """
+        proxies: Dict[str, str] = {}
+        
+        if http_proxy.strip():
+            proxies['http'] = self._parse_proxy(http_proxy.strip())
+        if https_proxy.strip():
+            proxies['https'] = self._parse_proxy(https_proxy.strip())
+        
+        self.proxies = proxies if proxies else None
+        return self.proxies
+    
+    def _parse_proxy(self, proxy_str: str) -> str:
+        """Parse proxy format: host:port:user:pass -> http://user:pass@host:port"""
+        parts = proxy_str.split(':')
+        
+        if len(parts) == 2:
+            # host:port (no authentication)
+            host, port = parts
+            return f"http://{host}:{port}"
+        elif len(parts) == 4:
+            # host:port:user:pass
+            host, port, user, password = parts
+            return f"http://{user}:{password}@{host}:{port}"
+        else:
+            # Return as-is if format is not recognized
+            return proxy_str
         
     # ==================== Port Scanning ====================
     def scan_ports(self, host: str, port_range: Tuple[int, int]) -> Dict[int, bool]:
@@ -183,7 +214,7 @@ class SecurityTester:
     def check_security_headers(self, url: str) -> Dict[str, Optional[str]]:
         """Check web security headers"""
         try:
-            response = requests.head(url, timeout=5)
+            response = requests.head(url, timeout=5, proxies=self.proxies)
             headers = response.headers
             
             security_headers = {

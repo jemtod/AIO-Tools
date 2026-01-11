@@ -34,6 +34,16 @@ A comprehensive Python-based GUI application for data dumping, security testing,
    - Bulk URL vulnerability scanning
    - Vulnerable URL collection and export (TXT/CSV)
 
+### 5. **Database Dumper (Dump SQL)**
+   - Extract database schema from vulnerable SQL injection URLs
+   - Search and dump data by keywords (user, password, email, etc.)
+   - Retrieve database metadata (version, current user, database name)
+   - UNION-based SQL injection exploitation
+   - Support for MySQL and compatible databases
+   - Export dumped data to TXT or CSV format
+   - Real-time results display with column preview
+   - Automatic keyword matching across all tables and columns
+
 ## Project Structure
 
 ```
@@ -75,8 +85,56 @@ dumptools/
 
 Run the application:
 ```
-python src/main.py
+python run.py
 ```
+
+### Database Dumper (Dump SQL Tab)
+
+The Database Dumper tool allows you to extract data from vulnerable SQL injection targets.
+
+#### Basic Workflow:
+
+1. **Get DB Info & Schema**
+   - Enter target URL: `http://example.com/page.php?id=1`
+   - Click "Get DB Info & Schema"
+   - View database version, current user, and table/column structure
+
+2. **Dump by Keywords**
+   - Modify keywords if needed (default: user, pass, email, password, username, admin, login)
+   - Click "Dump by Keywords"
+   - Results display matching columns with record count and data preview
+
+3. **Export Results**
+   - Click "Export Results"
+   - Choose TXT or CSV format
+   - Save dumped data to file
+
+#### Example:
+
+```
+Target URL: http://vulnerable-site.com/products.php?id=1
+Keywords: user, pass, email, password
+
+Results:
+- users.username (25 records)
+- users.password (25 records)  
+- users.email (25 records)
+- admin_users.user (5 records)
+```
+
+#### Keyword Search Examples:
+
+- **User Credentials**: user, pass, password, username, admin, login
+- **Personal Info**: email, phone, name, address, ssn
+- **Payment Info**: card, credit, banking, account, balance
+- **API Keys**: token, key, secret, api_key, auth
+
+#### Tips:
+
+- Start with "Get DB Info & Schema" to understand database structure
+- Use common keyword patterns for better results
+- Export data for offline analysis
+- Test on one URL first before bulk operations
 
 ## Requirements
 
@@ -87,7 +145,7 @@ python src/main.py
 
 ## License
 
-Personal Project - 2026
+Jemtod - 2026
 
 ## Author
 

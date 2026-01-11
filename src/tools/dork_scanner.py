@@ -29,6 +29,37 @@ class DorkScanner:
         self.vulnerable_urls = []
         self.collected_urls = []
         self.logger = ProgressLogger()
+        self.proxies: Optional[Dict[str, str]] = None
+    
+    def set_proxies(self, http_proxy: str = "", https_proxy: str = "") -> Optional[Dict[str, str]]:
+        """Configure HTTP/HTTPS proxies for outbound requests
+        Format: host:port:username:password or host:port (no auth)
+        """
+        proxies: Dict[str, str] = {}
+        
+        if http_proxy.strip():
+            proxies['http'] = self._parse_proxy(http_proxy.strip())
+        if https_proxy.strip():
+            proxies['https'] = self._parse_proxy(https_proxy.strip())
+        
+        self.proxies = proxies if proxies else None
+        return self.proxies
+    
+    def _parse_proxy(self, proxy_str: str) -> str:
+        """Parse proxy format: host:port:user:pass -> http://user:pass@host:port"""
+        parts = proxy_str.split(':')
+        
+        if len(parts) == 2:
+            # host:port (no authentication)
+            host, port = parts
+            return f"http://{host}:{port}"
+        elif len(parts) == 4:
+            # host:port:user:pass
+            host, port, user, password = parts
+            return f"http://{user}:{password}@{host}:{port}"
+        else:
+            # Return as-is if format is not recognized
+            return proxy_str
     
     # ==================== Dork List Parsing ====================
     def load_dork_file(self, filepath: str) -> Tuple[bool, int]:
@@ -158,7 +189,7 @@ class DorkScanner:
         for payload in payloads:
             test_url = f"{url}'{payload}"
             try:
-                response = requests.head(test_url, timeout=2)
+                response = requests.head(test_url, timeout=2, proxies=self.proxies)
                 # Check for SQL error patterns in response
                 tested_payloads.append({
                     'payload': payload,
@@ -181,7 +212,7 @@ class DorkScanner:
     def check_sql_errors(self, url: str) -> Dict[str, any]:
         """Check for SQL error messages"""
         try:
-            response = requests.get(url, timeout=5)
+            response = requests.get(url, timeout=5, proxies=self.proxies)
             content = response.text.lower()
             
             sql_error_patterns = [
@@ -315,7 +346,7 @@ class DorkScanner:
                 self.logger.info(f"Scanning dork {i+1}/{len(dorks)}: {dork}")
                 try:
                     urls = []
-                    search_results = ddgs.text(dork, max_results=max_results)
+                    search_results = ddgs.text(dork, max_results=max_results, proxy=self.proxies.get('https') if self.proxies else None)
                     
                     for result in search_results:
                         url = result.get('href', '')
@@ -345,13 +376,13 @@ class DorkScanner:
         """Scan single dork and return URLs"""
         try:
             if DDGS is None:
-                self.logger.error('duckduckgo-search not installed')
+                self.logger.error('ddgs library not installed')
                 return []
             
             self.logger.info(f"Scanning single dork: {dork}")
             urls = []
             ddgs = DDGS()
-            search_results = ddgs.text(dork, max_results=max_results)
+            search_results = ddgs.text(dork, max_results=max_results, proxy=self.proxies.get('https') if self.proxies else None)
             
             for result in search_results:
                 url = result.get('href', '')
