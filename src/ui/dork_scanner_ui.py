@@ -13,6 +13,7 @@ from PyQt6.QtCore import Qt, QThread, pyqtSignal, QTimer
 from tools import DorkScanner, FastScanner
 from datetime import datetime
 import threading
+from concurrent.futures import ThreadPoolExecutor
 
 
 class ScanWorkerThread(QThread):
@@ -153,60 +154,60 @@ class URLScannerThread(QThread):
         self.batch_size = 50  # Process in batches to prevent memory issues
     
     def run(self):
-        """Run URL vulnerability scanning in background thread"""
+        """Run URL vulnerability scanning in background thread with optimized concurrent requests"""
         try:
             total = len(self.urls)
             
-            # Process in batches to prevent memory and UI blocking issues
+            # Process in larger batches with concurrent requests
             for batch_start in range(0, total, self.batch_size):
                 if not self.running:
                     break
                 
                 batch_end = min(batch_start + self.batch_size, total)
+                batch_urls = self.urls[batch_start:batch_end]
                 
-                for idx in range(batch_start, batch_end):
-                    if not self.running:
-                        break
-                    
-                    url = self.urls[idx]
-                    url_num = idx + 1
-                    
-                    try:
-                        # Scan URL for SQL injection patterns
-                        pattern_result = self.scanner.detect_sql_injection_patterns(url)
-                        is_vulnerable = pattern_result['risk_level'] in ['High', 'Medium']
+                # Process URLs concurrently within batch
+                with ThreadPoolExecutor(max_workers=5) as executor:
+                    futures = {}
+                    for idx, url in enumerate(batch_urls):
+                        if not self.running:
+                            break
                         
-                        # Additional payload testing for high-risk URLs
-                        if pattern_result['risk_level'] == 'High':
-                            payload_result = self.scanner.test_sql_injection_payloads(url)
-                            # Check if any payload was successful
-                            for payload_test in payload_result.get('tested_payloads', []):
-                                if payload_test.get('potentially_vulnerable', False):
-                                    is_vulnerable = True
-                                    break
+                        url_num = batch_start + idx + 1
+                        future = executor.submit(self._scan_single_url, url, url_num, total)
+                        futures[future] = (url, url_num)
+                    
+                    # Collect results as they complete
+                    for future in futures:
+                        if not self.running:
+                            break
                         
-                        if is_vulnerable:
-                            self.vulnerable_urls.append(url)
-                            self.vulnerable_found.emit(url)  # Emit immediately
-                            status = "VULNERABLE"
-                        else:
+                        try:
+                            is_vulnerable = future.result(timeout=10)
+                            url, url_num = futures[future]
+                            
+                            if is_vulnerable:
+                                self.vulnerable_urls.append(url)
+                                self.vulnerable_found.emit(url)
+                                status = "VULNERABLE"
+                            else:
+                                self.clean_urls.append(url)
+                                self.clean_found.emit(url)
+                                status = "CLEAN"
+                            
+                            percentage = int((url_num / total) * 100)
+                            progress_msg = f"[{percentage}%] ({url_num}/{total}) {status}: {url[:50]}"
+                            self.progress_update.emit(progress_msg)
+                            
+                        except Exception as e:
+                            url, url_num = futures[future]
+                            percentage = int((url_num / total) * 100)
+                            self.progress_update.emit(f"[{percentage}%] ({url_num}/{total}) ERROR: {url[:40]}")
                             self.clean_urls.append(url)
-                            self.clean_found.emit(url)  # Emit immediately
-                            status = "CLEAN"
-                        
-                        # Emit progress with percentage
-                        percentage = int((url_num / total) * 100)
-                        progress_msg = f"[{percentage}%] ({url_num}/{total}) {status}: {url[:60]}"
-                        self.progress_update.emit(progress_msg)
-                        
-                    except Exception as e:
-                        percentage = int((url_num / total) * 100)
-                        self.progress_update.emit(f"[{percentage}%] ({url_num}/{total}) ERROR: {url[:40]}")
-                        self.clean_urls.append(url)  # Mark as clean if error
                 
-                # Small sleep between batches to allow UI updates
+                # More sleep between batches for UI responsiveness
                 if batch_end < total and self.running:
-                    self.msleep(10)
+                    self.msleep(50)
             
             # Emit complete results
             results = {
@@ -218,6 +219,53 @@ class URLScannerThread(QThread):
         
         except Exception as e:
             self.error_occurred.emit(f"Scan error: {str(e)}")
+    
+    def _scan_single_url(self, url: str, url_num: int, total: int) -> bool:
+        """Scan single URL for SQL injection vulnerability"""
+        try:
+            # Stage 1: Pattern-based detection (fast)
+            pattern_result = self.scanner.detect_sql_injection_patterns(url)
+            
+            # Only do expensive tests if pattern-based detection is positive
+            if not pattern_result.get('has_injectable_params', False):
+                return False  # Not injectable, skip expensive tests
+            
+            is_vulnerable = False
+            
+            # Stage 2: Payload testing (with shorter timeout)
+            if pattern_result.get('pattern_matched', False):
+                try:
+                    payload_result = self.scanner.test_sql_injection_payloads(url)
+                    for payload_test in payload_result.get('tested_payloads', []):
+                        if payload_test.get('vulnerable', False):
+                            is_vulnerable = True
+                            break
+                except:
+                    pass  # Payload testing failed, continue
+            
+            # Stage 3: SQL error checking (only if needed)
+            if not is_vulnerable:
+                try:
+                    error_result = self.scanner.check_sql_errors(url)
+                    if error_result.get('has_sql_errors', False):
+                        is_vulnerable = True
+                except:
+                    pass  # Error checking failed, continue
+            
+            # Risk-based classification
+            if not is_vulnerable:
+                risk_level = pattern_result.get('risk_level', 'Very Low')
+                if risk_level == 'High':
+                    is_vulnerable = True
+                elif risk_level == 'Medium':
+                    issue_count = len(pattern_result.get('issues', []))
+                    if issue_count >= 2:
+                        is_vulnerable = True
+            
+            return is_vulnerable
+        
+        except Exception:
+            return False  # Mark as clean on error
     
     def stop(self):
         """Stop scanning"""

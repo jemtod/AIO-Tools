@@ -124,40 +124,59 @@ class DorkScanner:
     
     # ==================== SQL Injection Detection ====================
     def detect_sql_injection_patterns(self, url: str) -> Dict[str, any]:
-        """Detect potential SQL injection vulnerabilities in URL"""
+        """Detect potential SQL injection vulnerabilities in URL with improved accuracy"""
         issues = []
         risk_score = 0
         
-        # Check for parameter patterns
-        param_patterns = [
-            r'[?&](id|user_id|product_id|cat|page|search|q|query)=',
-            r'[?&](username|login|user)=',
-            r'[?&](file|path|dir)=',
+        # Only check for actual injectable parameters (more specific patterns)
+        injectable_param_patterns = [
+            (r'[?&](id|user_id|product_id|post_id|article_id|page_id)=[\d]*', 50),
+            (r'[?&](username|email|login|user|admin)=\w+', 40),
+            (r'[?&](search|q|query|keyword)=\w+', 35),
+            (r'[?&](file|path|dir|page)=\w+', 45),
+            (r'[?&](cat|category|type|status)=[\d\w]*', 30),
         ]
         
-        for pattern in param_patterns:
+        has_injectable_param = False
+        for pattern, score in injectable_param_patterns:
             if re.search(pattern, url, re.IGNORECASE):
-                issues.append(f"Potential injectable parameter: {pattern}")
-                risk_score += 20
+                param_match = re.search(r'[?&](\w+)=', url, re.IGNORECASE)
+                if param_match:
+                    issues.append(f"Injectable parameter found: {param_match.group(1)}")
+                    risk_score += score
+                    has_injectable_param = True
         
-        # Check for unsafe parameter values
-        unsafe_chars = ['%', "'", '"', '+', '&', '|', ';']
-        if any(char in url for char in unsafe_chars):
-            issues.append("URL contains potentially unsafe characters")
-            risk_score += 15
+        # Only proceed with pattern analysis if URL has injectable parameters
+        if has_injectable_param:
+            # Check for SQL injection patterns in parameter values
+            suspicious_patterns = [
+                (r"'\s*(?:OR|AND)\s*'", 25),  # SQL logic with quotes
+                (r'"\s*(?:OR|AND)\s*"', 25),
+                (r"'.*--", 20),  # SQL comment after quote
+                (r"'.*#", 20),
+                (r"UNION\s+SELECT", 35),  # UNION-based injection
+                (r"SLEEP\s*\(\d+\)", 40),  # Time-based injection
+                (r"WAITFOR\s+DELAY", 40),
+                (r"BENCHMARK\s*\(", 35),
+                (r"'\s*=\s*'", 20),  # Boolean-based injection
+            ]
+            
+            for pattern, score in suspicious_patterns:
+                if re.search(pattern, url, re.IGNORECASE):
+                    issues.append(f"Suspicious SQL pattern detected: {pattern}")
+                    risk_score += score
+                    break
         
-        # Check for common SQL injection keywords
-        sql_keywords = ['union', 'select', 'where', 'and', 'or', 'drop', 'delete']
-        if any(keyword in url.lower() for keyword in sql_keywords):
-            issues.append("URL contains SQL keywords")
-            risk_score += 30
-        
+        # If no injectable parameters found, mark as very low risk
+        if not has_injectable_param:
+            risk_level = "Very Low"
+            risk_score = 0
         # Determine risk level
-        if risk_score >= 50:
+        elif risk_score >= 75:
             risk_level = "High"
-        elif risk_score >= 30:
+        elif risk_score >= 50:
             risk_level = "Medium"
-        elif risk_score >= 15:
+        elif risk_score >= 30:
             risk_level = "Low"
         else:
             risk_level = "Very Low"
@@ -167,81 +186,119 @@ class DorkScanner:
             'risk_level': risk_level,
             'risk_score': min(risk_score, 100),
             'issues': issues,
-            'timestamp': datetime.now().isoformat()
+            'timestamp': datetime.now().isoformat(),
+            'has_injectable_params': has_injectable_param,
+            'pattern_matched': len(issues) > 1
         }
     
     def test_sql_injection_payloads(self, url: str) -> Dict[str, any]:
-        """Test common SQL injection payloads"""
+        """Test common SQL injection payloads with optimized detection"""
+        # Limited payloads for faster testing (removed duplicates, kept only most effective)
         payloads = [
-            "' OR '1'='1",
-            "' OR 1=1--",
-            "' OR 1=1#",
-            "admin' --",
-            "' UNION SELECT NULL--",
-            "' AND SLEEP(5)--",
-            "1' AND '1'='1",
-            "1' UNION SELECT NULL,NULL--",
+            ("' OR '1'='1", "boolean"),
+            ("' UNION SELECT NULL--", "union"),
+            ("' AND SLEEP(2)--", "time"),
         ]
         
-        vulnerable = False
         tested_payloads = []
+        potentially_vulnerable = False
         
-        for payload in payloads:
+        # Quick timeout to avoid blocking
+        timeout = 2  # Reduced from 3 seconds
+        
+        try:
+            # Get baseline response (HEAD request for speed)
+            baseline_response = requests.head(url, timeout=timeout, proxies=self.proxies)
+            baseline_length = len(baseline_response.text) if baseline_response.text else 0
+        except:
+            baseline_length = 0
+        
+        for payload, payload_type in payloads:
+            if potentially_vulnerable:
+                break  # Stop if already found vulnerable
+            
             test_url = f"{url}'{payload}"
+            
             try:
-                response = requests.head(test_url, timeout=2, proxies=self.proxies)
-                # Check for SQL error patterns in response
-                tested_payloads.append({
-                    'payload': payload,
-                    'status_code': response.status_code,
-                    'potentially_vulnerable': response.status_code in [200, 500]
-                })
+                response = requests.get(test_url, timeout=timeout, proxies=self.proxies)
+                
+                # Quick analysis
+                vulnerable = False
+                reason = ""
+                
+                if response.status_code == 500:
+                    # SQL error is a strong indicator
+                    vulnerable = True
+                    reason = "SQL error triggered"
+                elif payload_type == "boolean" and len(response.text) != baseline_length:
+                    # Content changed = possible boolean injection
+                    vulnerable = True
+                    reason = "Content difference detected"
+                
+                if vulnerable:
+                    potentially_vulnerable = True
+                    tested_payloads.append({
+                        'payload': payload,
+                        'type': payload_type,
+                        'vulnerable': True,
+                        'reason': reason
+                    })
+                
+            except requests.Timeout:
+                # Timeout might indicate time-based injection
+                if payload_type == "time":
+                    potentially_vulnerable = True
+                    tested_payloads.append({
+                        'payload': payload,
+                        'type': payload_type,
+                        'vulnerable': True,
+                        'reason': 'Timeout - time-based SQLi suspected'
+                    })
             except Exception as e:
-                tested_payloads.append({
-                    'payload': payload,
-                    'error': str(e),
-                    'potentially_vulnerable': False
-                })
+                pass  # Ignore errors, mark as not vulnerable
         
         return {
             'url': url,
             'tested_payloads': tested_payloads,
-            'vulnerable': vulnerable
+            'vulnerable': potentially_vulnerable,
+            'payload_count': len(tested_payloads)
         }
     
     def check_sql_errors(self, url: str) -> Dict[str, any]:
-        """Check for SQL error messages"""
+        """Check for SQL error messages with timeout"""
         try:
-            response = requests.get(url, timeout=5, proxies=self.proxies)
+            # Reduced timeout for faster scanning
+            response = requests.get(url, timeout=2, proxies=self.proxies)
             content = response.text.lower()
             
-            sql_error_patterns = [
-                r"sql.*error",
-                r"mysql.*error",
-                r"postgresql.*error",
-                r"syntax error",
-                r"database error",
-                r"sqlstate",
-                r"odbc.*error",
-                r"oracle.*error",
+            # Only check critical error patterns (faster matching)
+            critical_errors = [
+                (r"you have an error in your sql syntax", "MySQL syntax error"),
+                (r"sql.*syntax.*error", "SQL syntax error"),
+                (r"fatal error.*mysql|mysql_fetch", "Fatal MySQL error"),
             ]
             
             found_errors = []
-            for pattern in sql_error_patterns:
-                if re.search(pattern, content):
-                    found_errors.append(pattern)
+            for pattern, error_type in critical_errors:
+                if re.search(pattern, content, re.IGNORECASE):
+                    found_errors.append({
+                        'type': error_type,
+                        'pattern': pattern
+                    })
+                    break  # Stop after first match for speed
             
             return {
                 'url': url,
                 'has_sql_errors': len(found_errors) > 0,
                 'error_patterns': found_errors,
-                'response_code': response.status_code
+                'response_code': response.status_code,
+                'error_count': len(found_errors)
             }
-        except Exception as e:
+        except Exception:
             return {
                 'url': url,
-                'error': str(e),
-                'has_sql_errors': False
+                'has_sql_errors': False,
+                'error_patterns': []
             }
     
     # ==================== URL Collection ====================
