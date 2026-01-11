@@ -19,21 +19,52 @@ class ScanWorkerThread(QThread):
     """Worker thread for dork scanning"""
     progress_updated = pyqtSignal(int)
     scan_complete = pyqtSignal(dict)
+    scan_stopped = pyqtSignal(dict)  # Emitted when scan is stopped
     error_occurred = pyqtSignal(str)
+    urls_updated = pyqtSignal(list)  # Emit URLs in real-time
     
     def __init__(self, scanner, dorks, max_results):
         super().__init__()
         self.scanner = scanner
         self.dorks = dorks
         self.max_results = max_results
+        self.running = True
     
     def run(self):
         """Run scan in background thread"""
         try:
-            results = self.scanner.scan_dorks_google(self.dorks, self.max_results)
+            # Start scanning but check running flag
+            results = {}
+            for i, dork in enumerate(self.dorks):
+                if not self.running:
+                    # Scan was stopped - emit partial results
+                    results['stopped'] = True
+                    results['scanned_count'] = i
+                    results['total_count'] = len(self.dorks)
+                    self.scan_stopped.emit(results)
+                    return
+                
+                # Scan single dork (this will update scanner's collected_urls)
+                try:
+                    urls = self.scanner.scan_single_dork(dork, self.max_results)
+                    results[dork] = urls
+                    
+                    # Emit collected URLs in real-time
+                    current_urls = list(self.scanner.get_collected_urls())
+                    if current_urls:
+                        self.urls_updated.emit(current_urls)
+                    
+                except:
+                    results[dork] = []
+            
+            # Completed successfully
             self.scan_complete.emit(results)
         except Exception as e:
             self.error_occurred.emit(str(e))
+    
+    def stop(self):
+        """Stop scanning"""
+        self.running = False
 
 
 class SingleDorkWorkerThread(QThread):
@@ -292,6 +323,31 @@ class DorkScannerUI(QWidget):
         """)
         start_scan_btn.clicked.connect(self._start_dork_scanning)
         btn_layout.addWidget(start_scan_btn)
+        
+        # STOP SCANNING button
+        self.stop_scan_btn = QPushButton("⏹ STOP SCANNING")
+        self.stop_scan_btn.setStyleSheet("""
+            QPushButton {
+                background-color: #95a5a6;
+                color: white;
+                font-weight: bold;
+                padding: 15px;
+                font-size: 13px;
+                border-radius: 5px;
+            }
+            QPushButton:hover {
+                background-color: #7f8c8d;
+            }
+            QPushButton:enabled {
+                background-color: #e67e22;
+            }
+            QPushButton:enabled:hover {
+                background-color: #d35400;
+            }
+        """)
+        self.stop_scan_btn.clicked.connect(self._stop_dork_scanning)
+        self.stop_scan_btn.setEnabled(False)
+        btn_layout.addWidget(self.stop_scan_btn)
         
         # Single dork scan
         single_btn = QPushButton("Scan Single Dork")
@@ -702,10 +758,15 @@ class DorkScannerUI(QWidget):
         self.dork_status.setText("⏳ Scanning dorks... Please wait (this may take a few minutes)")
         self.dork_status.setStyleSheet("color: #f39c12; font-weight: bold;")
         
+        # Enable stop button
+        self.stop_scan_btn.setEnabled(True)
+        
         # Start scan in background thread
         self.scan_thread = ScanWorkerThread(self.scanner, dorks, max_results)
         self.scan_thread.scan_complete.connect(self._on_scan_complete)
+        self.scan_thread.scan_stopped.connect(self._on_scan_stopped)
         self.scan_thread.error_occurred.connect(self._on_scan_error)
+        self.scan_thread.urls_updated.connect(self._on_urls_updated)  # Real-time URL update
         self.scan_thread.start()
         
         # Update logs periodically
@@ -715,6 +776,9 @@ class DorkScannerUI(QWidget):
     
     def _on_scan_complete(self, results):
         """Handle scan completion"""
+        # Disable stop button
+        self.stop_scan_btn.setEnabled(False)
+        
         # Stop log update timer
         if hasattr(self, '_update_logs_timer'):
             self._update_logs_timer.stop()
@@ -772,6 +836,73 @@ class DorkScannerUI(QWidget):
                 "No URLs collected. Try different dorks or adjust settings."
             )
     
+    def _stop_dork_scanning(self):
+        """Stop the ongoing dork scanning"""
+        if hasattr(self, 'scan_thread') and self.scan_thread and self.scan_thread.isRunning():
+            reply = QMessageBox.question(
+                self, "Stop Scanning",
+                "Are you sure you want to stop scanning?\n\n"
+                "Collected URLs will be displayed automatically.",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
+            )
+            
+            if reply == QMessageBox.StandardButton.Yes:
+                self.dork_status.setText("⏹ Stopping scan...")
+                self.dork_status.setStyleSheet("color: #e67e22; font-weight: bold;")
+                self.scan_thread.stop()
+    
+    def _on_urls_updated(self, urls):
+        """Handle real-time URL updates during scanning"""
+        self._refresh_collected_urls()
+    
+    def _on_scan_stopped(self, results):
+        """Handle scan stopped by user"""
+        # Disable stop button
+        self.stop_scan_btn.setEnabled(False)
+        
+        # Stop log update timer
+        if hasattr(self, '_update_logs_timer'):
+            self._update_logs_timer.stop()
+        
+        # Final log update
+        self._update_logs_display()
+        
+        # Display collected URLs immediately
+        self._refresh_collected_urls()
+        
+        collected_count = len(self.scanner.get_collected_urls())
+        scanned_count = results.get('scanned_count', 0)
+        total_count = results.get('total_count', 0)
+        
+        # Update progress based on scanned dorks
+        if total_count > 0:
+            progress = int((scanned_count / total_count) * 100)
+            self.scan_progress.setValue(progress)
+        
+        self.dork_status.setText(
+            f"⏹ Scan stopped! Scanned {scanned_count}/{total_count} dorks. "
+            f"Collected {collected_count} URLs"
+        )
+        self.dork_status.setStyleSheet("color: #e67e22; font-weight: bold;")
+        
+        # Show collected URLs message
+        if collected_count > 0:
+            QMessageBox.information(
+                self, "Scan Stopped",
+                f"Scanning stopped by user.\n\n"
+                f"Scanned: {scanned_count}/{total_count} dorks\n"
+                f"Collected: {collected_count} URLs\n\n"
+                f"URLs are displayed in 'Collected URLs' section.\n"
+                f"You can export them or continue to SQL Injection scan."
+            )
+        else:
+            QMessageBox.information(
+                self, "Scan Stopped",
+                f"Scanning stopped.\n\n"
+                f"Scanned: {scanned_count}/{total_count} dorks\n"
+                f"No URLs collected yet."
+            )
+    
     def _auto_populate_sql_injection_urls(self):
         """Auto-populate SQL Injection tab with collected URLs"""
         urls = self.scanner.get_collected_urls()
@@ -782,6 +913,9 @@ class DorkScannerUI(QWidget):
     
     def _on_scan_error(self, error_msg):
         """Handle scan error"""
+        # Disable stop button
+        self.stop_scan_btn.setEnabled(False)
+        
         # Stop log update timer
         if hasattr(self, '_update_logs_timer'):
             self._update_logs_timer.stop()

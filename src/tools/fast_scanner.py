@@ -115,12 +115,23 @@ class FastScanner:
         return proxy_str
     
     def _get_session(self) -> requests.Session:
-        """Get session from pool"""
-        return self.session_pool.get()
+        """Get session from pool with timeout to prevent blocking"""
+        try:
+            return self.session_pool.get(timeout=2)
+        except queue.Empty:
+            # Fallback: create new session if pool is exhausted
+            return self._create_session()
     
     def _return_session(self, session: requests.Session):
-        """Return session to pool"""
-        self.session_pool.put(session)
+        """Return session to pool with timeout to prevent blocking"""
+        try:
+            self.session_pool.put(session, timeout=2)
+        except queue.Full:
+            # Pool is full, close session to free resources
+            try:
+                session.close()
+            except:
+                pass
     
     # ==================== Fast Dork Scanning ====================
     
@@ -223,25 +234,35 @@ class FastScanner:
         if not urls:
             return {}
         
-        self.logger.info(f"Starting parallel SQLi scan of {len(urls)} URLs with {self.max_workers} workers")
+        # Optimize worker count based on URL count (prevent too many threads)
+        optimal_workers = min(self.max_workers, max(1, len(urls) // 5))
+        self.logger.info(f"Starting parallel SQLi scan of {len(urls)} URLs with {optimal_workers} workers")
         start_time = time.time()
         
         results = {}
         completed = 0
         total = len(urls)
         
-        with ThreadPoolExecutor(max_workers=self.max_workers) as executor:
+        # Use timeout to prevent hanging
+        effective_timeout = max(2, self.timeout)
+        
+        with ThreadPoolExecutor(max_workers=optimal_workers, thread_name_prefix="sqli_scan_") as executor:
             # Submit all URL scans
-            future_to_url = {
-                executor.submit(self._scan_url_for_sqli_worker, url): url
-                for url in urls
-            }
+            future_to_url = {}
+            for url in urls:
+                try:
+                    future = executor.submit(self._scan_url_for_sqli_worker, url)
+                    future_to_url[future] = url
+                except Exception as e:
+                    self.logger.debug(f"Failed to submit scan for {url}: {str(e)}")
+                    results[url] = {'vulnerable': False, 'error': str(e)}
+                    completed += 1
             
-            # Process completed tasks
-            for future in as_completed(future_to_url):
+            # Process completed tasks with timeout
+            for future in as_completed(future_to_url, timeout=effective_timeout + 10):
                 url = future_to_url[future]
                 try:
-                    result = future.result()
+                    result = future.result(timeout=effective_timeout)
                     results[url] = result
                     completed += 1
                     
@@ -283,23 +304,24 @@ class FastScanner:
         }
         
         session = self._get_session()
+        worker_timeout = max(2, self.timeout)
         
         try:
-            # Pattern detection
+            # Pattern detection (fast, non-blocking)
             if self._has_sql_patterns(url):
                 result['details'].append('SQL patterns detected in URL')
                 result['risk_level'] = 'Medium'
             
-            # Test SQL error messages
-            if self._test_sql_errors_fast(url, session):
+            # Test SQL error messages with reduced timeout
+            if self._test_sql_errors_fast(url, session, worker_timeout):
                 result['vulnerable'] = True
                 result['method'] = 'Error-based'
                 result['sql_type'] = 'MySQL/MSSQL'
                 result['risk_level'] = 'High'
                 result['details'].append('SQL error messages detected')
             
-            # Test basic payloads
-            elif self._test_sql_payloads_fast(url, session):
+            # Test basic payloads with reduced timeout
+            elif self._test_sql_payloads_fast(url, session, worker_timeout):
                 result['vulnerable'] = True
                 result['method'] = 'Boolean-based'
                 result['sql_type'] = 'Generic'
@@ -326,13 +348,13 @@ class FastScanner:
         ]
         return any(re.search(pattern, url, re.IGNORECASE) for pattern in patterns)
     
-    def _test_sql_errors_fast(self, url: str, session: requests.Session) -> bool:
+    def _test_sql_errors_fast(self, url: str, session: requests.Session, timeout: int = 3) -> bool:
         """Fast SQL error detection with single quotes"""
         try:
             # Inject single quote
             test_url = url + "'" if '?' in url else url + "?id=1'"
             
-            response = session.get(test_url, timeout=self.timeout, allow_redirects=False)
+            response = session.get(test_url, timeout=timeout, allow_redirects=False)
             content = response.text.lower()
             
             # SQL error signatures
@@ -346,21 +368,20 @@ class FastScanner:
             
             return any(error in content for error in sql_errors)
         
-        except:
+        except Exception:
             return False
     
-    def _test_sql_payloads_fast(self, url: str, session: requests.Session) -> bool:
-        """Fast SQL injection payload testing"""
+    def _test_sql_payloads_fast(self, url: str, session: requests.Session, timeout: int = 3) -> bool:
+        """Fast SQL injection payload testing with timeout protection"""
         try:
-            # Get baseline response
-            baseline = session.get(url, timeout=self.timeout, allow_redirects=False)
+            # Get baseline response with timeout
+            baseline = session.get(url, timeout=timeout, allow_redirects=False)
             baseline_length = len(baseline.text)
             
-            # Test boolean-based SQLi
+            # Test boolean-based SQLi (reduced payloads for speed)
             payloads = [
                 "' OR '1'='1",
                 "' OR 1=1--",
-                "1' OR '1'='1",
             ]
             
             for payload in payloads:
@@ -370,19 +391,19 @@ class FastScanner:
                     test_url = url + "?id=" + payload
                 
                 try:
-                    response = session.get(test_url, timeout=self.timeout, allow_redirects=False)
+                    response = session.get(test_url, timeout=timeout, allow_redirects=False)
                     
                     # Check for significant response difference
                     length_diff = abs(len(response.text) - baseline_length)
                     if length_diff > 100:  # Significant difference
                         return True
                 
-                except:
+                except Exception:
                     continue
             
             return False
         
-        except:
+        except Exception:
             return False
     
     # ==================== Batch Processing ====================

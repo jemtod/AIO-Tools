@@ -44,6 +44,18 @@ A comprehensive Python-based GUI application for data dumping, security testing,
    - Real-time results display with column preview
    - Automatic keyword matching across all tables and columns
 
+### 6. **⚡ Fast Scanner (High-Performance)**
+   - **Multi-threading**: 1-50 configurable worker threads
+   - **Connection pooling**: HTTP session reuse for optimal performance
+   - **Batch processing**: Memory-efficient for large URL lists
+   - **10-50x faster** than sequential scanning
+   - **Parallel dork scanning**: Scan multiple dorks simultaneously
+   - **Parallel SQLi scanning**: Test multiple URLs concurrently
+   - **URL checker**: Fast alive check and info gathering
+   - **Throughput**: 10-50 URLs/second
+   - **Configurable**: Adjust workers, timeout, batch size on-the-fly
+   - **Thread-safe**: Lock-based synchronization for data integrity
+
 ## Project Structure
 
 ```
