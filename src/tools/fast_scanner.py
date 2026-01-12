@@ -26,18 +26,20 @@ except ImportError:
 class FastScanner:
     """High-performance scanner with multi-threading and connection pooling"""
     
-    def __init__(self, max_workers: int = 10, timeout: int = 5):
+    def __init__(self, max_workers: int = 10, timeout: int = 5, search_engine: str = 'duckduckgo'):
         """
         Initialize fast scanner
         
         Args:
             max_workers: Maximum concurrent threads (default: 10)
             timeout: Request timeout in seconds (default: 5)
+            search_engine: Search engine to use (default: 'duckduckgo')
         """
         self.max_workers = max_workers
         self.timeout = timeout
         self.logger = ProgressLogger()
         self.proxies: Optional[Dict[str, str]] = None
+        self.search_engine = search_engine.lower()
         
         # Thread-safe data structures
         self._lock = Lock()

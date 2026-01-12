@@ -1,6 +1,6 @@
 """
 Dork Scanner Tool Module
-Handles Google dorking and vulnerability scanning
+Handles Google dorking and vulnerability scanning with multiple search engines
 """
 
 import re
@@ -8,7 +8,7 @@ from typing import List, Dict, Tuple, Optional
 from datetime import datetime
 import requests
 import time
-from urllib.parse import urljoin
+from urllib.parse import urljoin, quote_plus
 from .progress_logger import ProgressLogger, LogLevel
 
 try:
@@ -21,15 +21,24 @@ except ImportError:
 
 
 class DorkScanner:
-    """Dork scanner and vulnerability finder"""
+    """Dork scanner and vulnerability finder with multiple search engines"""
     
-    def __init__(self):
+    def __init__(self, search_engine='duckduckgo'):
         self.scan_results = []
         self.dork_list = []
         self.vulnerable_urls = []
         self.collected_urls = []
         self.logger = ProgressLogger()
         self.proxies: Optional[Dict[str, str]] = None
+        self.search_engine = search_engine  # 'duckduckgo' or 'bing'
+    
+    def set_search_engine(self, engine: str) -> None:
+        """Set search engine: 'duckduckgo', 'bing', or 'both'"""
+        if engine.lower() in ['duckduckgo', 'bing', 'both']:
+            self.search_engine = engine.lower()
+        else:
+            self.logger.warning(f"Unknown search engine: {engine}, using DuckDuckGo")
+            self.search_engine = 'duckduckgo'
     
     def set_proxies(self, http_proxy: str = "", https_proxy: str = "") -> Optional[Dict[str, str]]:
         """Configure HTTP/HTTPS proxies for outbound requests
@@ -456,15 +465,130 @@ class DorkScanner:
         """Get scan history"""
         return self.scan_results
     
-    # ==================== Google Dorking ====================
-    def scan_dorks_google(self, dorks: List[str] = None, max_results: int = 5) -> Dict[str, List[str]]:
-        """Scan using DuckDuckGo to collect URLs"""
+    # ==================== Search Engine Methods ====================
+    def _search_bing(self, query: str, max_results: int = 10) -> List[str]:
+        """Search using Bing with improved URL extraction"""
+        urls = []
+        try:
+            headers = {
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+                'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+                'Accept-Language': 'en-US,en;q=0.5',
+                'Accept-Encoding': 'gzip, deflate',
+                'Connection': 'keep-alive',
+                'Upgrade-Insecure-Requests': '1'
+            }
+            
+            # Bing search URL with first parameter for pagination
+            search_url = f"https://www.bing.com/search?q={quote_plus(query)}&first=1&count={max_results}"
+            
+            response = requests.get(search_url, headers=headers, timeout=15, proxies=self.proxies, allow_redirects=True)
+            
+            if response.status_code == 200:
+                content = response.text
+                
+                # Multiple extraction methods for better results
+                
+                # Method 1: Extract from cite tags (most reliable)
+                cite_pattern = r'<cite[^>]*>([^<]+)</cite>'
+                cite_matches = re.findall(cite_pattern, content)
+                for match in cite_matches:
+                    url = match.strip()
+                    # Reconstruct full URL if needed
+                    if not url.startswith('http'):
+                        url = 'https://' + url
+                    if url not in urls:
+                        urls.append(url)
+                
+                # Method 2: Extract from data-bm attribute (Bing's URL storage)
+                data_bm_pattern = r'data-bm="(\d+)"[^>]*><h2><a[^>]+href="([^"]+)"'
+                bm_matches = re.findall(data_bm_pattern, content)
+                for _, url in bm_matches:
+                    if url.startswith('http') and url not in urls:
+                        urls.append(url)
+                
+                # Method 3: Look for result links in li.b_algo
+                algo_pattern = r'<li class="b_algo"[^>]*>.*?<h2><a[^>]+href="([^"]+)"'
+                algo_matches = re.findall(algo_pattern, content, re.DOTALL)
+                for url in algo_matches:
+                    if url.startswith('http') and 'bing.com' not in url and url not in urls:
+                        urls.append(url)
+                
+                # Method 4: Generic href extraction (fallback)
+                if len(urls) < max_results // 2:
+                    href_pattern = r'href="(https?://[^"]+)"'
+                    href_matches = re.findall(href_pattern, content)
+                    for url in href_matches:
+                        # Filter out Bing/Microsoft URLs
+                        if all(domain not in url.lower() for domain in ['bing.com', 'microsoft.com', 'msn.com', 'live.com']):
+                            if url not in urls:
+                                urls.append(url)
+                                if len(urls) >= max_results:
+                                    break
+                
+                # Limit results
+                urls = urls[:max_results]
+                
+            else:
+                self.logger.warning(f"Bing returned status code: {response.status_code}")
+            
+            time.sleep(2)  # Rate limiting (increased to avoid throttling)
+            return urls
+            
+        except Exception as e:
+            self.logger.warning(f"Bing search error: {str(e)}")
+            return urls
+    
+    def _search_duckduckgo(self, query: str, max_results: int = 10) -> List[str]:
+        """Search using DuckDuckGo"""
+        urls = []
         try:
             if DDGS is None:
-                msg = 'ddgs library not installed. Install with: pip install ddgs'
-                self.logger.error(msg)
-                return {'error': msg, 'urls': {}}
+                self.logger.error('ddgs library not installed')
+                return urls
             
+            ddgs = DDGS()
+            search_results = ddgs.text(query, max_results=max_results, proxy=self.proxies.get('https') if self.proxies else None)
+            
+            for result in search_results:
+                url = result.get('href', '')
+                if url:
+                    urls.append(url)
+                if len(urls) >= max_results:
+                    break
+            
+            return urls
+        except Exception as e:
+            self.logger.warning(f"DuckDuckGo search error: {str(e)}")
+            return urls
+    
+    def _search(self, query: str, max_results: int = 10) -> List[str]:
+        """Search using selected search engine"""
+        if self.search_engine == 'both':
+            # Use both search engines and combine results
+            urls_ddg = self._search_duckduckgo(query, max_results)
+            urls_bing = self._search_bing(query, max_results)
+            
+            # Combine and deduplicate
+            all_urls = []
+            seen = set()
+            for url in urls_ddg + urls_bing:
+                if url not in seen:
+                    all_urls.append(url)
+                    seen.add(url)
+                if len(all_urls) >= max_results * 2:  # Allow more results when using both
+                    break
+            
+            return all_urls
+        elif self.search_engine == 'bing':
+            return self._search_bing(query, max_results)
+        else:
+            return self._search_duckduckgo(query, max_results)
+    
+    # ==================== Google Dorking ====================
+    def scan_dorks_google(self, dorks: List[str] = None, max_results: int = 5) -> Dict[str, List[str]]:
+        """Scan using selected search engine to collect URLs"""
+        try:
             if dorks is None:
                 dorks = self.dork_list
             
@@ -474,34 +598,30 @@ class DorkScanner:
             
             self.logger.set_total(len(dorks))
             results = {}
-            ddgs = DDGS()
             
             for i, dork in enumerate(dorks):
-                self.logger.info(f"Scanning dork {i+1}/{len(dorks)}: {dork}")
+                engine_display = "BOTH (DDG+Bing)" if self.search_engine == 'both' else self.search_engine.upper()
+                self.logger.info(f"Scanning dork {i+1}/{len(dorks)}: {dork} [{engine_display}]")
                 try:
-                    urls = []
-                    search_results = ddgs.text(dork, max_results=max_results, proxy=self.proxies.get('https') if self.proxies else None)
+                    urls = self._search(dork, max_results)
                     
-                    for result in search_results:
-                        url = result.get('href', '')
-                        if url and url not in urls:
-                            urls.append(url)
+                    # Remove duplicates
+                    unique_urls = []
+                    for url in urls:
+                        if url not in unique_urls and url not in self.collected_urls:
+                            unique_urls.append(url)
                             self.collected_urls.append(url)
-                        if len(urls) >= max_results:
-                            break
                     
-                    results[dork] = urls
-                    self.logger.update_progress(i+1, f"Found {len(urls)} URLs from: {dork}")
+                    results[dork] = unique_urls
+                    self.logger.update_progress(i+1, f"Found {len(unique_urls)} URLs from: {dork}")
                     
                 except Exception as e:
                     self.logger.warning(f"Error scanning '{dork}': {str(e)}")
                     results[dork] = []
             
-            self.logger.complete(f"Scan complete! Collected {len(self.collected_urls)} total URLs")
+            engine_display = "BOTH (DDG+Bing)" if self.search_engine == 'both' else self.search_engine.upper()
+            self.logger.complete(f"Scan complete! Collected {len(self.collected_urls)} total URLs via {engine_display}")
             return results
-        except ImportError as e:
-            self.logger.error('duckduckgo-search not installed')
-            return {'error': 'duckduckgo-search not installed', 'urls': {}}
         except Exception as e:
             self.logger.error(f"Scan error: {str(e)}")
             return {'error': str(e), 'urls': {}}
@@ -509,25 +629,19 @@ class DorkScanner:
     def scan_single_dork(self, dork: str, max_results: int = 10) -> List[str]:
         """Scan single dork and return URLs"""
         try:
-            if DDGS is None:
-                self.logger.error('ddgs library not installed')
-                return []
+            engine_display = "BOTH (DDG+Bing)" if self.search_engine == 'both' else self.search_engine.upper()
+            self.logger.info(f"Scanning single dork: {dork} [{engine_display}]")
+            urls = self._search(dork, max_results)
             
-            self.logger.info(f"Scanning single dork: {dork}")
-            urls = []
-            ddgs = DDGS()
-            search_results = ddgs.text(dork, max_results=max_results, proxy=self.proxies.get('https') if self.proxies else None)
-            
-            for result in search_results:
-                url = result.get('href', '')
-                if url and url not in urls and url not in self.collected_urls:
-                    urls.append(url)
+            # Remove duplicates and add to collected URLs
+            unique_urls = []
+            for url in urls:
+                if url not in unique_urls and url not in self.collected_urls:
+                    unique_urls.append(url)
                     self.collected_urls.append(url)
-                if len(urls) >= max_results:
-                    break
             
-            self.logger.success(f"Found {len(urls)} URLs")
-            return urls
+            self.logger.success(f"Found {len(unique_urls)} URLs via {engine_display}")
+            return unique_urls
         except Exception as e:
             self.logger.error(f"Error scanning dork: {str(e)}")
             return []

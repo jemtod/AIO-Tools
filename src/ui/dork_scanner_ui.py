@@ -475,6 +475,16 @@ class DorkScannerUI(QWidget):
         results_layout.addWidget(self.results_per_dork)
         layout.addLayout(results_layout)
         
+        # Search engine selection
+        engine_layout = QHBoxLayout()
+        engine_layout.addWidget(QLabel("Search Engine:"))
+        self.search_engine_combo = QComboBox()
+        self.search_engine_combo.addItems(["DuckDuckGo", "Bing", "Both (DuckDuckGo + Bing)"])
+        self.search_engine_combo.currentTextChanged.connect(self._on_search_engine_changed)
+        engine_layout.addWidget(self.search_engine_combo)
+        engine_layout.addStretch()
+        layout.addLayout(engine_layout)
+        
         # Proxy settings
         proxy_layout = QHBoxLayout()
         proxy_layout.addWidget(QLabel("HTTP Proxy:"))
@@ -1025,6 +1035,18 @@ class DorkScannerUI(QWidget):
         else:
             self.proxy_status.setText("Proxy: direct connection")
             self.proxy_status.setStyleSheet("color: #7f8c8d;")
+    
+    def _on_search_engine_changed(self, engine_name: str):
+        """Handle search engine selection change"""
+        if "Both" in engine_name:
+            engine = "both"
+            msg = "Search engine set to: Both\n\nDork scanning will use DuckDuckGo + Bing for maximum results."
+        else:
+            engine = engine_name.lower()
+            msg = f"Search engine set to: {engine_name}\n\nDork scanning will now use {engine_name}."
+        
+        self.scanner.set_search_engine(engine)
+        QMessageBox.information(self, "Search Engine Changed", msg)
     
     def _update_stop_button_style(self, is_scanning: bool):
         """Update STOP button style based on scanning state"""
