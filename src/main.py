@@ -5,12 +5,14 @@ DumpTools - Main Application Entry Point
 import sys
 import os
 
-# Add parent directory to path for imports
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+# Add project root and src directory to path for imports
+project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, project_root)
+sys.path.insert(0, os.path.join(project_root, 'src'))
 
 from PyQt6.QtWidgets import QApplication
-from ui.main_window import MainWindow
-from utils.logger import setup_logger
+from src.ui.main_window import MainWindow
+from src.utils.logger import setup_logger
 
 
 def main():
@@ -24,7 +26,8 @@ def main():
     app = QApplication(sys.argv)
     
     # Set application style
-    app.setStyle('Fusion')
+    from src.ui.styles import apply_light_theme
+    apply_light_theme(app)
     
     # Create and show main window
     main_window = MainWindow()

@@ -1,122 +1,76 @@
 """
 Progress Logger Module
-Logs scan progress for UI display
+Provides logging functionality with progress tracking
 """
 
-from typing import Callable, Optional, List
-from datetime import datetime
 from enum import Enum
+from typing import Optional
+from datetime import datetime
 
 
 class LogLevel(Enum):
     """Log levels"""
-    DEBUG = "DEBUG"
-    INFO = "INFO"
-    WARNING = "WARNING"
-    ERROR = "ERROR"
-    SUCCESS = "SUCCESS"
+    DEBUG = 0
+    INFO = 1
+    WARNING = 2
+    ERROR = 3
+    SUCCESS = 4
 
 
 class ProgressLogger:
-    """Progress logger with callbacks for UI"""
+    """Logger with progress tracking capabilities"""
     
-    def __init__(self):
-        self.logs = []
-        self.progress = 0
-        self.total_items = 0
-        self.current_item = 0
-        
-        # Callbacks for UI updates
-        self.on_log: Optional[Callable] = None
-        self.on_progress: Optional[Callable] = None
-        self.on_complete: Optional[Callable] = None
+    def __init__(self, log_level: LogLevel = LogLevel.INFO):
+        self.log_level = log_level
+        self.total = 0
+        self.current = 0
+        self.start_time: Optional[datetime] = None
     
-    def log(self, message: str, level: LogLevel = LogLevel.INFO) -> None:
-        """Log a message"""
-        timestamp = datetime.now().strftime("%H:%M:%S")
-        
-        log_entry = {
-            'timestamp': timestamp,
-            'level': level.value,
-            'message': message,
-            'full_text': f"[{timestamp}] [{level.value}] {message}"
-        }
-        
-        self.logs.append(log_entry)
-        
-        # Trigger callback
-        if self.on_log:
-            self.on_log(log_entry)
+    def set_log_level(self, level: LogLevel) -> None:
+        """Set logging level"""
+        self.log_level = level
     
     def set_total(self, total: int) -> None:
-        """Set total items to process"""
-        self.total_items = total
-        self.current_item = 0
-        self.log(f"Starting process with {total} items", LogLevel.INFO)
+        """Set total items for progress tracking"""
+        self.total = total
+        self.start_time = datetime.now()
     
     def update_progress(self, current: int, message: str = "") -> None:
         """Update progress"""
-        self.current_item = current
-        
-        if self.total_items > 0:
-            self.progress = int((current / self.total_items) * 100)
-        
-        if message:
-            self.log(message, LogLevel.INFO)
-        
-        # Trigger callback
-        if self.on_progress:
-            self.on_progress(self.progress, current, self.total_items)
-    
-    def increment_progress(self, message: str = "") -> None:
-        """Increment progress by 1"""
-        self.update_progress(self.current_item + 1, message)
-    
-    def success(self, message: str) -> None:
-        """Log success message"""
-        self.log(message, LogLevel.SUCCESS)
-    
-    def error(self, message: str) -> None:
-        """Log error message"""
-        self.log(message, LogLevel.ERROR)
-    
-    def warning(self, message: str) -> None:
-        """Log warning message"""
-        self.log(message, LogLevel.WARNING)
-    
-    def info(self, message: str) -> None:
-        """Log info message"""
-        self.log(message, LogLevel.INFO)
+        self.current = current
+        if self.total > 0:
+            percentage = int((current / self.total) * 100)
+            msg = f"[{percentage}%] {message}" if message else f"[{percentage}%] Progress: {current}/{self.total}"
+            print(msg)
     
     def debug(self, message: str) -> None:
         """Log debug message"""
-        self.log(message, LogLevel.DEBUG)
+        if self.log_level.value <= LogLevel.DEBUG.value:
+            print(f"[DEBUG] {message}")
     
-    def complete(self, message: str = "") -> None:
-        """Mark process as complete"""
-        if message:
-            self.success(message)
-        else:
-            self.success(f"Process complete! Processed {self.current_item}/{self.total_items} items")
-        
-        self.progress = 100
-        
-        if self.on_complete:
-            self.on_complete()
+    def info(self, message: str) -> None:
+        """Log info message"""
+        if self.log_level.value <= LogLevel.INFO.value:
+            print(f"[INFO] {message}")
     
-    def get_logs(self) -> List[dict]:
-        """Get all logs"""
-        return self.logs
+    def warning(self, message: str) -> None:
+        """Log warning message"""
+        if self.log_level.value <= LogLevel.WARNING.value:
+            print(f"[WARNING] {message}")
     
-    def clear_logs(self) -> None:
-        """Clear all logs"""
-        self.logs = []
+    def error(self, message: str) -> None:
+        """Log error message"""
+        if self.log_level.value <= LogLevel.ERROR.value:
+            print(f"[ERROR] {message}")
     
-    def get_progress(self) -> dict:
-        """Get current progress status"""
-        return {
-            'progress': self.progress,
-            'current': self.current_item,
-            'total': self.total_items,
-            'percentage': f"{self.progress}%"
-        }
+    def success(self, message: str) -> None:
+        """Log success message"""
+        print(f"[SUCCESS] {message}")
+    
+    def complete(self, message: str = "Complete") -> None:
+        """Log completion message"""
+        elapsed = ""
+        if self.start_time:
+            elapsed_time = datetime.now() - self.start_time
+            elapsed = f" (Time: {elapsed_time.total_seconds():.1f}s)"
+        print(f"[COMPLETE] {message}{elapsed}")
